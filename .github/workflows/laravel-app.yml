@@ -1,0 +1,72 @@
+name: Laravel App CI
+
+# Reusable workflow for Laravel + Inertia/Vite applications.
+# Call it from a project with:
+#
+#   jobs:
+#     ci:
+#       uses: givanov95/ci-workflows/.github/workflows/laravel-app.yml@v1
+#
+on:
+  workflow_call:
+    inputs:
+      php-version:
+        description: PHP version to test on.
+        type: string
+        default: '8.3'
+      node-version:
+        description: Node version used for the asset build.
+        type: string
+        default: '20'
+      build:
+        description: Run the Vite build (npm ci + npm run build).
+        type: boolean
+        default: true
+      run-tests:
+        description: Run the test suite (php artisan test).
+        type: boolean
+        default: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php-version }}
+          coverage: none
+
+      - name: Cache Composer packages
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: composer-${{ inputs.php-version }}-${{ hashFiles('**/composer.lock') }}
+          restore-keys: composer-${{ inputs.php-version }}-
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Prepare environment
+        run: |
+          if [ -f .env.example ] && [ ! -f .env ]; then cp .env.example .env; fi
+          php artisan key:generate
+
+      - name: Setup Node
+        if: ${{ inputs.build }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+
+      - name: Build assets
+        if: ${{ inputs.build }}
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          npm run build
+
+      - name: Run tests
+        if: ${{ inputs.run-tests }}
+        run: php artisan test

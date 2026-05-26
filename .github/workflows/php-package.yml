@@ -1,0 +1,61 @@
+name: PHP Package CI
+
+# Reusable workflow for PHP packages/libraries (PHPUnit, optional PHPStan).
+# Call it from a project with:
+#
+#   jobs:
+#     ci:
+#       uses: givanov95/ci-workflows/.github/workflows/php-package.yml@v1
+#       with:
+#         php-versions: '["8.3", "8.4"]'
+#         phpstan: true
+#
+on:
+  workflow_call:
+    inputs:
+      php-versions:
+        description: JSON array of PHP versions to test against (matrix).
+        type: string
+        default: '["8.3"]'
+      phpstan:
+        description: Run PHPStan (vendor/bin/phpstan analyse).
+        type: boolean
+        default: false
+      test-command:
+        description: Command used to run the test suite.
+        type: string
+        default: 'vendor/bin/phpunit'
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ${{ fromJSON(inputs.php-versions) }}
+    name: PHP ${{ matrix.php }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+
+      - name: Cache Composer packages
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: composer-${{ matrix.php }}-${{ hashFiles('**/composer.json') }}
+          restore-keys: composer-${{ matrix.php }}-
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: PHPStan
+        if: ${{ inputs.phpstan }}
+        run: vendor/bin/phpstan analyse --no-progress --no-interaction
+
+      - name: Run tests
+        run: ${{ inputs.test-command }}
