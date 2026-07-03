@@ -1,0 +1,14 @@
+{
+    "extraKnownMarketplaces": {
+        "claude-flow": {
+            "source": {
+                "source": "github",
+                "repo": "givanov95/claude-flow"
+            },
+            "autoUpdate": true
+        }
+    },
+    "enabledPlugins": {
+        "gws@claude-flow": true
+    }
+}
