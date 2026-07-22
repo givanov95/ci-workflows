@@ -16,7 +16,7 @@ on:
       php-versions:
         description: JSON array of PHP versions to test against (matrix).
         type: string
-        default: '["8.3"]'
+        default: '["8.3", "8.4"]'
       phpstan:
         description: Run PHPStan (vendor/bin/phpstan analyse).
         type: boolean

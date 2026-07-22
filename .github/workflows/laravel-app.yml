@@ -13,7 +13,7 @@ on:
       php-version:
         description: PHP version to test on.
         type: string
-        default: '8.3'
+        default: '8.4'
       node-version:
         description: Node version used for the asset build.
         type: string
