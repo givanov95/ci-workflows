@@ -52,11 +52,14 @@ out-of-order events are harmless.
 | `project-owner` | repository owner | User or organization that owns the board. |
 | `staging-environment` | `false` | `true` only if a push to `staging` really deploys a staging environment. |
 
-Secret **`PROJECT_TOKEN`**: a *classic* personal access token with **only the `project` scope**
-(`https://github.com/settings/tokens/new?scopes=project&description=gws-board-sync`). The default
-`GITHUB_TOKEN` cannot reach a user-owned board, and fine-grained tokens do not support them. The
-workflow reads issues with `GITHUB_TOKEN` and touches the board only with this token, so it
-never needs repository access. Without the secret it prints a notice and stays green.
+Secret **`PROJECT_TOKEN`**: a *classic* personal access token with the **`project`** scope
+(`https://github.com/settings/tokens/new?scopes=project,repo&description=gws-board-sync`). The default
+`GITHUB_TOKEN` cannot reach a user-owned board, and fine-grained tokens do not support them.
+For **private repositories** the token also needs **`repo`**: with `project` alone GitHub answers
+`Could not resolve to a node with the global id` because the token cannot see the issue. (A
+public-only setup can stay on `project`.) Use a 1-year expiry and keep the token only in the
+secrets of the repos that call this workflow; only the `Move cards` job reads it. Without the
+secret the workflow prints a notice and stays green.
 Columns are found by name (emoji ignored): In review, Ready to ship (or Ready for Testing),
 Staging / QA (or Staging), Done.
 
