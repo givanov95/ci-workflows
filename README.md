@@ -33,6 +33,63 @@ Composer install → optional PHPStan → PHPUnit, across a PHP version matrix.
 | `phpstan` | `false` | Run `vendor/bin/phpstan analyse`. |
 | `test-command` | `vendor/bin/phpunit` | Test command. |
 
+### `board-sync.yml` — keep GitHub Project cards in step with PRs and pushes
+
+Moves the card of every issue a PR or push refers to (`Fixes|Closes|Resolves #N` in the PR title,
+body or commits, or in the pushed commits). Cards only move **forward**, so re-runs and
+out-of-order events are harmless.
+
+| Event | Card goes to |
+| --- | --- |
+| PR opened / reopened / ready for review | In review |
+| PR merged into `dev` | Ready to ship |
+| push to `staging` (only with `staging-environment: true`) | Staging / QA |
+| push to `main` | Done |
+
+| Input | Default | Description |
+| --- | --- | --- |
+| `project-number` | – (required) | The board number (the N in `.../projects/N`). |
+| `project-owner` | repository owner | User or organization that owns the board. |
+| `staging-environment` | `false` | `true` only if a push to `staging` really deploys a staging environment. |
+
+Secret **`PROJECT_TOKEN`**: a *classic* personal access token with **only the `project` scope**
+(`https://github.com/settings/tokens/new?scopes=project&description=gws-board-sync`). The default
+`GITHUB_TOKEN` cannot reach a user-owned board, and fine-grained tokens do not support them. The
+workflow reads issues with `GITHUB_TOKEN` and touches the board only with this token, so it
+never needs repository access. Without the secret it prints a notice and stays green.
+Columns are found by name (emoji ignored): In review, Ready to ship (or Ready for Testing),
+Staging / QA (or Staging), Done.
+
+For a repo that deploys, call it from the deploy workflow so a card moves only after the deploy
+succeeded (`needs: deploy`), and add a small `board.yml` for the PR events:
+
+```yaml
+# deploy workflow (push to staging / main)
+  board:
+    needs: deploy
+    permissions: { contents: read, issues: read, pull-requests: read }
+    uses: givanov95/ci-workflows/.github/workflows/board-sync.yml@v1
+    with: { project-number: 6 }            # staging-environment: true if it has one
+    secrets: { PROJECT_TOKEN: "${{ secrets.PROJECT_TOKEN }}" }
+```
+
+```yaml
+# .github/workflows/board.yml
+name: Board
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, closed]
+jobs:
+  board:
+    permissions: { contents: read, issues: read, pull-requests: read }
+    uses: givanov95/ci-workflows/.github/workflows/board-sync.yml@v1
+    with: { project-number: 6 }
+    secrets: { PROJECT_TOKEN: "${{ secrets.PROJECT_TOKEN }}" }
+```
+
+A repo with no deploy (a package) can skip the deploy workflow and add `push: branches: [main]` to
+`board.yml` instead.
+
 ## Usage
 
 Add a tiny caller workflow to the consuming repo.
