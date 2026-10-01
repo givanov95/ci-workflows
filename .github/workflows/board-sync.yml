@@ -11,8 +11,9 @@ name: Board sync
 # pushed commits. Cards only ever move FORWARD (New < Backlog < Ready < In progress < In review
 # < Ready to ship < Staging / QA < Done), so a re-run or an out-of-order event is harmless.
 #
-# Needs a classic PAT with ONLY the `project` scope as the PROJECT_TOKEN secret (GITHUB_TOKEN
-# cannot reach a user-owned board). Without the secret the workflow does nothing and stays green.
+# Needs a classic PAT as the PROJECT_TOKEN secret (GITHUB_TOKEN cannot reach a user-owned board):
+# scope `project`, plus `repo` when the board holds issues of PRIVATE repositories (a project-only
+# token cannot see those issues). Without the secret the workflow does nothing and stays green.
 # Columns are found by NAME (emoji ignored): In review, Ready to ship (or Ready for Testing),
 # Staging / QA (or Staging), Done.
 
@@ -33,7 +34,7 @@ on:
         default: false
     secrets:
       PROJECT_TOKEN:
-        description: Classic PAT with the `project` scope only.
+        description: Classic PAT - scope `project`, plus `repo` for private repositories.
         required: false
 
 permissions:
@@ -152,7 +153,9 @@ jobs:
             # idempotent: returns the existing card when the issue is already on the board
             ITEM="$(gql -f p="$PROJECT_ID" -f c="$NODE_ID" -f query='
               mutation($p:ID!,$c:ID!){addProjectV2ItemById(input:{projectId:$p,contentId:$c}){item{id
-                status:fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}')"
+                status:fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}' 2>&1)" || {
+              echo "::error::Could not add the card of #$N. If this says 'Could not resolve to a node', PROJECT_TOKEN cannot see the issue: a private repository needs the classic PAT scope repo as well as project."
+              echo "$ITEM" | head -3; RC=1; continue; }
             ITEM_ID="$(echo "$ITEM" | jq -r '.data.addProjectV2ItemById.item.id // empty')"
             [ -n "$ITEM_ID" ] || { echo "::error::Could not add/find the card of #$N."; RC=1; continue; }
             CUR="$(echo "$ITEM" | jq -r '.data.addProjectV2ItemById.item.status.name // ""')"
