@@ -93,6 +93,53 @@ jobs:
 A repo with no deploy (a package) can skip the deploy workflow and add `push: branches: [main]` to
 `board.yml` instead.
 
+### `dependabot-security-merge.yml` — merge Dependabot security updates after green tests
+
+A gate + merge step, **not** a test runner: every project has its own CI (databases, asset
+build), so the caller runs that as a job and this workflow depends on it (`needs`). It merges a
+PR only when **all** of these hold: opened by Dependabot, labelled `security` (security updates
+only — version updates are never touched), a semver level in `allowed-update-types`, and the
+caller's tests passed. Anything else is left open for a human.
+
+| Input | Default | Description |
+| --- | --- | --- |
+| `allowed-update-types` | `patch,minor` | Semver levels that may be merged automatically. |
+
+Secret **`PROJECT_TOKEN`**: the same classic PAT as for `board-sync` (needs `repo`). The repos
+are private on the free plan — no branch protection, so no native auto-merge — and a merge made
+with `GITHUB_TOKEN` would not trigger the `push` deploy workflows. Dependabot-triggered runs see
+only *Dependabot* secrets, so store it there too: `gh secret set PROJECT_TOKEN --app dependabot`.
+Without the secret the PR stays open and the run logs a warning.
+
+```yaml
+# .github/workflows/dependabot-automerge.yml
+name: Dependabot security auto-merge
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: dependabot-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    if: github.actor == 'dependabot[bot]'
+    uses: ./.github/workflows/...   # or inline: the project's own test job (same steps as its deploy `ci`)
+
+  merge:
+    needs: ci
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: givanov95/ci-workflows/.github/workflows/dependabot-security-merge.yml@v1
+    secrets:
+      PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+```
+
+Also enable *Dependabot alerts* and *Dependabot security updates* on the repo
+(`gh api -X PUT repos/OWNER/REPO/vulnerability-alerts` and `.../automated-security-fixes`).
+
 ## Usage
 
 Add a tiny caller workflow to the consuming repo.

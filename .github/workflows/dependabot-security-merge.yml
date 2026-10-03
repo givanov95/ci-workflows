@@ -1,0 +1,104 @@
+name: Dependabot Security Merge
+
+# Reusable gate + merge for Dependabot *security* updates.
+#
+# It does NOT run tests itself: every project has its own CI (databases, asset
+# build, ...). Run that CI as a job of the caller and make this one depend on it,
+# so a red build never gets merged:
+#
+#   on:
+#     pull_request:
+#       branches: [main]
+#
+#   jobs:
+#     ci:
+#       if: github.actor == 'dependabot[bot]'
+#       ...                      # the project's own test job
+#     merge:
+#       needs: ci
+#       permissions:
+#         contents: read
+#         pull-requests: read
+#       uses: givanov95/ci-workflows/.github/workflows/dependabot-security-merge.yml@v1
+#       secrets:
+#         PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+#
+# What it merges: a PR opened by Dependabot that is a security update (carries the
+# `security` label) and bumps patch/minor versions only. Anything else — version
+# updates, majors — is left for a human.
+#
+# Why a PAT: the repos are private on the free plan, so there is no branch protection
+# and no native auto-merge, and a merge made with GITHUB_TOKEN does not trigger the
+# `push` workflows (deploys). The token needs `repo`. Dependabot-triggered runs only
+# see *Dependabot* secrets, so PROJECT_TOKEN must also be stored with
+# `gh secret set PROJECT_TOKEN --app dependabot`. Without it the PR is left open.
+on:
+  workflow_call:
+    inputs:
+      allowed-update-types:
+        description: Comma-separated semver levels that may be merged automatically.
+        type: string
+        default: 'patch,minor'
+    secrets:
+      PROJECT_TOKEN:
+        description: Personal access token with `repo` scope, used to merge.
+        required: false
+
+jobs:
+  merge:
+    name: Merge security update
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Decide
+        id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          ALLOWED: ${{ inputs.allowed-update-types }}
+          HAS_TOKEN: ${{ secrets.PROJECT_TOKEN != '' }}
+        run: |
+          # Labels are read now (not from the event payload): Dependabot adds them
+          # right after opening the PR, long before the caller's tests are done.
+          labels="$(gh pr view "$PR_URL" --json labels --jq '[.labels[].name] | join(",")')"
+          echo "labels=$labels update-type=$UPDATE_TYPE"
+
+          # Dependabot puts the `security` label on security-update PRs (and only
+          # those), so version updates are never merged by this workflow.
+          security=false
+          if [[ ",$labels," == *",security,"* ]]; then
+            security=true
+          fi
+
+          level="${UPDATE_TYPE#version-update:semver-}"
+          allowed=false
+          if [[ ",$ALLOWED," == *",$level,"* ]]; then
+            allowed=true
+          fi
+
+          if [ "$security" != true ]; then
+            echo "::notice::Not a security update — left for manual review."
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+          elif [ "$allowed" != true ]; then
+            echo "::notice::Security update with '$level' bump is not in [$ALLOWED] — left for manual review."
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+          elif [ "$HAS_TOKEN" != true ]; then
+            echo "::warning::PROJECT_TOKEN is not available (add it as a Dependabot secret) — merge this security update by hand."
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "merge=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge
+        if: steps.decide.outputs.merge == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge "$PR_URL" --squash --delete-branch
