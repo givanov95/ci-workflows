@@ -24,8 +24,8 @@ name: Dependabot Security Merge
 #       with:
 #         deploy-workflow: deploy.yml   # omit if the project does not deploy
 #
-# What it merges: a PR opened by Dependabot that is a security update (carries the
-# `security` label) and bumps patch/minor versions only. Anything else — version
+# What it merges: a PR opened by Dependabot that is a security update (see the Decide
+# step for how it is recognised) and bumps patch/minor versions only. Anything else — version
 # updates, majors — is left for a human.
 #
 # No personal access token: the merge uses the job's own GITHUB_TOKEN (permissions
@@ -70,15 +70,19 @@ jobs:
           UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
           ALLOWED: ${{ inputs.allowed-update-types }}
         run: |
-          # Labels are read now (not from the event payload): Dependabot adds them
-          # right after opening the PR, long before the caller's tests are done.
-          labels="$(gh pr view "$PR_URL" --json labels --jq '[.labels[].name] | join(",")')"
+          # Labels and body are read now (not from the event payload): Dependabot may
+          # still be labelling the PR, and the caller's tests take minutes anyway.
+          pr="$(gh pr view "$PR_URL" --json labels,body)"
+          labels="$(jq -r '[.labels[].name] | join(",")' <<<"$pr")"
           echo "labels=$labels update-type=$UPDATE_TYPE"
 
-          # Dependabot puts the `security` label on security-update PRs (and only
-          # those), so version updates are never merged by this workflow.
+          # A security update is recognised by the `security` label or — what npm and
+          # composer security PRs actually carry — the compatibility-score link in the
+          # body that Dependabot generates only for security updates (version updates
+          # link to about-dependabot-version-updates). Version updates are never merged.
           security=false
-          if [[ ",$labels," == *",security,"* ]]; then
+          if [[ ",$labels," == *",security,"* ]] \
+             || jq -e '.body // "" | contains("about-dependabot-security-updates")' <<<"$pr" >/dev/null; then
             security=true
           fi
 
