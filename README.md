@@ -93,6 +93,32 @@ jobs:
 A repo with no deploy (a package) can skip the deploy workflow and add `push: branches: [main]` to
 `board.yml` instead.
 
+### `post-deploy-check.yml` — health gate after a deploy
+
+Polls a URL (e.g. Laravel's `/up`) until it answers the expected status, retrying while the app restarts.
+
+| Input | Default | Description |
+| --- | --- | --- |
+| `url` | – (required) | Health URL. |
+| `expected-status` | `200` | Status that means healthy. |
+| `attempts` / `interval` | `12` / `10` | Tries and seconds between them. |
+| `initial-delay` | `0` | Seconds to wait before the first try. |
+| `soft` | `false` | Never fail; only set the `healthy` output (`true`/`false`). |
+
+Use it hard (`needs: deploy`) as the deploy's verdict, and soft **before** the deploy as a baseline:
+a rollback should only be attempted when the site was healthy before and is not after.
+
+```yaml
+  pre:                      # baseline, in parallel with the tests
+    uses: givanov95/ci-workflows/.github/workflows/post-deploy-check.yml@v1
+    with: { url: https://example.com/up, attempts: 1, soft: true }
+
+  health:                   # verdict, after the deploy
+    needs: deploy
+    uses: givanov95/ci-workflows/.github/workflows/post-deploy-check.yml@v1
+    with: { url: https://example.com/up, initial-delay: 10 }
+```
+
 ### `dependabot-security-merge.yml` — merge Dependabot security updates after green tests
 
 A gate + merge step, **not** a test runner: every project has its own CI (databases, asset
