@@ -17,21 +17,21 @@ name: Dependabot Security Merge
 #     merge:
 #       needs: ci
 #       permissions:
-#         contents: read
-#         pull-requests: read
+#         contents: write
+#         pull-requests: write
+#         actions: write
 #       uses: givanov95/ci-workflows/.github/workflows/dependabot-security-merge.yml@v1
-#       secrets:
-#         PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+#       with:
+#         deploy-workflow: deploy.yml   # omit if the project does not deploy
 #
 # What it merges: a PR opened by Dependabot that is a security update (carries the
 # `security` label) and bumps patch/minor versions only. Anything else — version
 # updates, majors — is left for a human.
 #
-# Why a PAT: the repos are private on the free plan, so there is no branch protection
-# and no native auto-merge, and a merge made with GITHUB_TOKEN does not trigger the
-# `push` workflows (deploys). The token needs `repo`. Dependabot-triggered runs only
-# see *Dependabot* secrets, so PROJECT_TOKEN must also be stored with
-# `gh secret set PROJECT_TOKEN --app dependabot`. Without it the PR is left open.
+# No personal access token: the merge uses the job's own GITHUB_TOKEN (permissions
+# raised above). A merge made with GITHUB_TOKEN does not trigger `push` workflows, so
+# when the project deploys on push, name its workflow in `deploy-workflow` and it is
+# started explicitly with `workflow_dispatch` (add that trigger to the deploy workflow).
 on:
   workflow_call:
     inputs:
@@ -39,31 +39,36 @@ on:
         description: Comma-separated semver levels that may be merged automatically.
         type: string
         default: 'patch,minor'
-    secrets:
-      PROJECT_TOKEN:
-        description: Personal access token with `repo` scope, used to merge.
-        required: false
+      deploy-workflow:
+        description: >-
+          Workflow file to start on the base branch after the merge (e.g. deploy.yml; it
+          needs a workflow_dispatch trigger). Leave empty if nothing deploys on push.
+        type: string
+        default: ''
 
 jobs:
   merge:
     name: Merge security update
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
     if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
     steps:
       - name: Fetch Dependabot metadata
         id: meta
         uses: dependabot/fetch-metadata@v2
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ github.token }}
 
       - name: Decide
         id: decide
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
           ALLOWED: ${{ inputs.allowed-update-types }}
-          HAS_TOKEN: ${{ secrets.PROJECT_TOKEN != '' }}
         run: |
           # Labels are read now (not from the event payload): Dependabot adds them
           # right after opening the PR, long before the caller's tests are done.
@@ -89,9 +94,6 @@ jobs:
           elif [ "$allowed" != true ]; then
             echo "::notice::Security update with '$level' bump is not in [$ALLOWED] — left for manual review."
             echo "merge=false" >> "$GITHUB_OUTPUT"
-          elif [ "$HAS_TOKEN" != true ]; then
-            echo "::warning::PROJECT_TOKEN is not available (add it as a Dependabot secret) — merge this security update by hand."
-            echo "merge=false" >> "$GITHUB_OUTPUT"
           else
             echo "merge=true" >> "$GITHUB_OUTPUT"
           fi
@@ -99,6 +101,17 @@ jobs:
       - name: Merge
         if: steps.decide.outputs.merge == 'true'
         env:
-          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: gh pr merge "$PR_URL" --squash --delete-branch
+
+      # A merge made with GITHUB_TOKEN does not trigger the push workflows, so start
+      # the deploy explicitly (workflow_dispatch is the one event GITHUB_TOKEN may fire).
+      - name: Start deploy
+        if: steps.decide.outputs.merge == 'true' && inputs.deploy-workflow != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+          DEPLOY: ${{ inputs.deploy-workflow }}
+        run: gh workflow run "$DEPLOY" --repo "$REPO" --ref "$BASE"

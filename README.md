@@ -104,12 +104,13 @@ caller's tests passed. Anything else is left open for a human.
 | Input | Default | Description |
 | --- | --- | --- |
 | `allowed-update-types` | `patch,minor` | Semver levels that may be merged automatically. |
+| `deploy-workflow` | – | Workflow file to start after the merge (e.g. `deploy.yml`). Leave empty if nothing deploys on push. |
 
-Secret **`PROJECT_TOKEN`**: the same classic PAT as for `board-sync` (needs `repo`). The repos
-are private on the free plan — no branch protection, so no native auto-merge — and a merge made
-with `GITHUB_TOKEN` would not trigger the `push` deploy workflows. Dependabot-triggered runs see
-only *Dependabot* secrets, so store it there too: `gh secret set PROJECT_TOKEN --app dependabot`.
-Without the secret the PR stays open and the run logs a warning.
+**No token or secret is needed.** The job merges with its own `GITHUB_TOKEN` (the caller grants
+`contents: write`, `pull-requests: write`, `actions: write`). A merge made with `GITHUB_TOKEN`
+does not trigger `push` workflows, so a project that deploys on push names its workflow in
+`deploy-workflow` and the job starts it with `workflow_dispatch` — add `workflow_dispatch:` to
+that workflow's `on:`.
 
 ```yaml
 # .github/workflows/dependabot-automerge.yml
@@ -125,16 +126,17 @@ concurrency:
 jobs:
   ci:
     if: github.actor == 'dependabot[bot]'
-    uses: ./.github/workflows/...   # or inline: the project's own test job (same steps as its deploy `ci`)
+    # ... the project's own test job (same steps as its deploy `ci`)
 
   merge:
     needs: ci
     permissions:
-      contents: read
-      pull-requests: read
+      contents: write
+      pull-requests: write
+      actions: write
     uses: givanov95/ci-workflows/.github/workflows/dependabot-security-merge.yml@v1
-    secrets:
-      PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+    with:
+      deploy-workflow: deploy.yml
 ```
 
 Also enable *Dependabot alerts* and *Dependabot security updates* on the repo
