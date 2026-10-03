@@ -24,8 +24,8 @@ name: Dependabot Security Merge
 #       with:
 #         deploy-workflow: deploy.yml   # omit if the project does not deploy
 #
-# What it merges: a PR opened by Dependabot that is a security update (see the Decide
-# step for how it is recognised) and bumps patch/minor versions only. Anything else — version
+# What it merges: a PR opened by Dependabot that is a security update (an ecosystem not
+# configured for version updates in dependabot.yml, or marked as one — see Decide) and bumps patch/minor versions only. Anything else — version
 # updates, majors — is left for a human.
 #
 # No personal access token: the merge uses the job's own GITHUB_TOKEN (permissions
@@ -68,6 +68,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          ECOSYSTEM: ${{ steps.meta.outputs.package-ecosystem }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.event.pull_request.base.ref }}
           ALLOWED: ${{ inputs.allowed-update-types }}
         run: |
           # Labels and body are read now (not from the event payload): Dependabot may
@@ -76,13 +79,33 @@ jobs:
           labels="$(jq -r '[.labels[].name] | join(",")' <<<"$pr")"
           echo "labels=$labels update-type=$UPDATE_TYPE"
 
-          # A security update is recognised by the `security` label or — what npm and
-          # composer security PRs actually carry — the compatibility-score link in the
-          # body that Dependabot generates only for security updates (version updates
-          # link to about-dependabot-version-updates). Version updates are never merged.
+          # A version update can only exist for an ecosystem listed in dependabot.yml, so
+          # a Dependabot PR for an ecosystem that is NOT configured there is a security
+          # update. (Labels and the body marker are unreliable: Dependabot adds no
+          # `security` label to npm/composer PRs and drops the compatibility-score block
+          # from the body when it rebases.) They are kept as extra signals for repos
+          # that do configure the ecosystem.
+          case "$ECOSYSTEM" in
+            npm_and_yarn) cfg=npm ;;
+            github_actions) cfg=github-actions ;;
+            *) cfg="$ECOSYSTEM" ;;
+          esac
+          config=""
+          for f in .github/dependabot.yml .github/dependabot.yaml; do
+            c="$(gh api "repos/$REPO/contents/$f?ref=$BASE" --jq .content 2>/dev/null | base64 -d 2>/dev/null || true)"
+            config="$config"$'\n'"$c"
+          done
+          configured=false
+          if [ -n "$cfg" ] && grep -Eq "package-ecosystem:[[:space:]]*[\"']?${cfg}[\"']?[[:space:]]*(#.*)?$" <<<"$config"; then
+            configured=true
+          fi
+          echo "ecosystem=$ECOSYSTEM configured-for-version-updates=$configured"
+
           security=false
-          if [[ ",$labels," == *",security,"* ]] \
-             || jq -e '.body // "" | contains("about-dependabot-security-updates")' <<<"$pr" >/dev/null; then
+          if [ -n "$cfg" ] && [ "$configured" != true ]; then
+            security=true
+          elif [[ ",$labels," == *",security,"* ]] \
+               || jq -e '.body // "" | contains("about-dependabot-security-updates")' <<<"$pr" >/dev/null; then
             security=true
           fi
 
