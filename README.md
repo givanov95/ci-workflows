@@ -232,7 +232,7 @@ enable *Settings → Actions → Access* on this repo to allow your other repos 
 
 | Type | Workflow | Examples |
 | --- | --- | --- |
-| Laravel app | `laravel-app.yml` | gwebsolutions, slavelia, task, laravel-shop, laravel-starter* |
+| Laravel app | `laravel-app.yml` | gwebsolutions, slavelia, task, laravel-shop |
 | PHP package | `php-package.yml` | laravel-translations, laravel-attachments, laravel-data-table, typed-http, laravel-git-hooks |
 
 ## License
