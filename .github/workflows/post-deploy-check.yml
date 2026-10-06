@@ -38,15 +38,23 @@ on:
         description: Report only (healthy output), never fail the job.
         type: boolean
         default: false
+      timeout-minutes:
+        description: Cancel the check if it runs longer than this (raise it together with attempts and interval).
+        type: number
+        default: 30
     outputs:
       healthy:
         description: '"true" if the URL answered the expected status, otherwise "false".'
         value: ${{ jobs.check.outputs.healthy }}
 
+# The job only calls the URL; it needs no access to the repository.
+permissions: {}
+
 jobs:
   check:
     name: Health check
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     outputs:
       healthy: ${{ steps.poll.outputs.healthy }}
     steps:

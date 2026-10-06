@@ -15,10 +15,11 @@ Composer install → `key:generate` → Vite build → `php artisan test`.
 
 | Input | Default | Description |
 | --- | --- | --- |
-| `php-version` | `8.3` | PHP version. |
+| `php-version` | `8.4` | PHP version. |
 | `node-version` | `20` | Node version for the asset build. |
 | `build` | `true` | Run `npm ci` + `npm run build`. |
 | `run-tests` | `true` | Run `php artisan test`. |
+| `timeout-minutes` | `60` | Cancel the job if it runs longer than this. |
 
 > Assumes the project's `phpunit.xml` uses an in-memory SQLite DB (the default in these
 > projects). A suite that needs MySQL would require a service container — extend as needed.
@@ -29,9 +30,10 @@ Composer install → optional PHPStan → PHPUnit, across a PHP version matrix.
 
 | Input | Default | Description |
 | --- | --- | --- |
-| `php-versions` | `["8.3"]` | JSON array of PHP versions (matrix). |
+| `php-versions` | `["8.3", "8.4"]` | JSON array of PHP versions (matrix). |
 | `phpstan` | `false` | Run `vendor/bin/phpstan analyse`. |
 | `test-command` | `vendor/bin/phpunit` | Test command. |
+| `timeout-minutes` | `30` | Cancel a matrix job that runs longer than this. |
 
 ### `board-sync.yml` — keep GitHub Project cards in step with PRs and pushes
 
@@ -123,6 +125,7 @@ Polls a URL (e.g. Laravel's `/up`) until it answers the expected status, retryin
 | `attempts` / `interval` | `12` / `10` | Tries and seconds between them. |
 | `initial-delay` | `0` | Seconds to wait before the first try. |
 | `soft` | `false` | Never fail; only set the `healthy` output (`true`/`false`). |
+| `timeout-minutes` | `30` | Cancel the check after this long — raise it together with `attempts` and `interval`. |
 
 Use it hard (`needs: deploy`) as the deploy's verdict, and soft **before** the deploy as a baseline:
 a rollback should only be attempted when the site was healthy before and is not after.
@@ -142,8 +145,9 @@ a rollback should only be attempted when the site was healthy before and is not 
 
 A gate + merge step, **not** a test runner: every project has its own CI (databases, asset
 build), so the caller runs that as a job and this workflow depends on it (`needs`). It merges a
-PR only when **all** of these hold: opened by Dependabot, labelled `security` (security updates
-only — version updates are never touched), a semver level in `allowed-update-types`, and the
+PR only when **all** of these hold: opened by Dependabot, a **security** update (a PR for an
+ecosystem that `dependabot.yml` does not configure for version updates, or one marked as a security
+update — version updates are never touched), a semver level in `allowed-update-types`, and the
 caller's tests passed. Anything else is left open for a human.
 
 A PR that bumps several dependencies at once (a vulnerable package plus its ancestor, a
@@ -219,6 +223,23 @@ jobs:
     with:
       php-versions: '["8.3", "8.4"]'
       phpstan: true
+```
+
+## Permissions, timeouts and concurrency
+
+The reusable workflows ask for the least they need: `laravel-app.yml` and `php-package.yml` run with
+`contents: read` and check out without keeping the token (`persist-credentials: false`),
+`post-deploy-check.yml` needs no permissions at all. Every job has a `timeout-minutes` (an input
+where a project may need more); the actions they use are pinned by commit SHA, kept current by
+Dependabot (`.github/dependabot.yml`).
+
+`concurrency` is **not** set here: whether a newer push should cancel an older run is the caller's
+policy (cancelling a deploy half-way is rarely what you want). In the calling workflow:
+
+```yaml
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true   # only for CI; leave it off for deploys
 ```
 
 ## Versioning
