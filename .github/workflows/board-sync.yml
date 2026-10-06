@@ -11,9 +11,17 @@ name: Board sync
 # pushed commits. Cards only ever move FORWARD (New < Backlog < Ready < In progress < In review
 # < Ready to ship < Staging / QA < Done), so a re-run or an out-of-order event is harmless.
 #
-# Needs a classic PAT as the PROJECT_TOKEN secret (GITHUB_TOKEN cannot reach a user-owned board):
-# scope `project`, plus `repo` when the board holds issues of PRIVATE repositories (a project-only
-# token cannot see those issues). Without the secret the workflow does nothing and stays green.
+# The default GITHUB_TOKEN cannot reach any Project board, so one of two tokens is needed:
+#
+#   * GitHub App (recommended; the board must be owned by an ORGANIZATION). Pass `app-client-id`
+#     and the App's private key as the BOARD_APP_KEY secret. A short-lived installation token (1 hour,
+#     revoked after the job) is minted for the board owner with only Organization projects: write and
+#     Issues / Pull requests: read. It takes precedence over PROJECT_TOKEN when both are present.
+#   * PROJECT_TOKEN (legacy; the only option for a USER-owned board): a classic PAT, scope `project`,
+#     plus `repo` when the board holds issues of PRIVATE repositories (a project-only token cannot
+#     see those issues).
+#
+# Without either the workflow does nothing and stays green.
 # Columns are found by NAME (emoji ignored): In review, Ready to ship (or Ready for Testing),
 # Staging / QA (or Staging), Done.
 
@@ -32,9 +40,16 @@ on:
         description: Set true only if pushes to `staging` deploy a real staging environment.
         type: boolean
         default: false
+      app-client-id:
+        description: Client ID of the GitHub App that moves the cards (needs the BOARD_APP_KEY secret). Leave empty to use PROJECT_TOKEN.
+        type: string
+        default: ''
     secrets:
+      BOARD_APP_KEY:
+        description: Private key (PEM) of the GitHub App named by `app-client-id`.
+        required: false
       PROJECT_TOKEN:
-        description: Classic PAT - scope `project`, plus `repo` for private repositories.
+        description: Legacy - classic PAT, scope `project`, plus `repo` for private repositories.
         required: false
 
 permissions:
@@ -47,12 +62,33 @@ jobs:
     name: Move cards
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      APP_CLIENT_ID: ${{ inputs.app-client-id }}
+      HAS_APP_KEY: ${{ secrets.BOARD_APP_KEY != '' }}
     steps:
+      - name: Check the GitHub App configuration
+        if: ${{ env.APP_CLIENT_ID != '' && env.HAS_APP_KEY != 'true' }}
+        run: |
+          echo "::error title=Board sync::app-client-id is set but the BOARD_APP_KEY secret is missing (pass it with secrets: BOARD_APP_KEY)."
+          exit 1
+
+      - name: Create a GitHub App installation token
+        id: app
+        if: ${{ env.APP_CLIENT_ID != '' && env.HAS_APP_KEY == 'true' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ inputs.app-client-id }}
+          private-key: ${{ secrets.BOARD_APP_KEY }}
+          owner: ${{ inputs.project-owner != '' && inputs.project-owner || github.repository_owner }}
+          permission-organization-projects: write
+          permission-issues: read
+          permission-pull-requests: read
+
       - name: Work out the target column and move the cards
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          PROJECT_TOKEN: ${{ steps.app.outputs.token || secrets.PROJECT_TOKEN }}
           EVENT_NAME: ${{ github.event_name }}
           REPO: ${{ github.repository }}
           REPO_OWNER: ${{ github.repository_owner }}
@@ -72,7 +108,7 @@ jobs:
           notice() { echo "::notice title=Board sync::$*"; }
 
           if [ -z "${PROJECT_TOKEN:-}" ]; then
-            notice "PROJECT_TOKEN is not set - skipping (no cards moved)."
+            notice "No board token (neither a GitHub App via app-client-id + BOARD_APP_KEY nor PROJECT_TOKEN) - skipping (no cards moved)."
             exit 0
           fi
 
@@ -131,7 +167,7 @@ jobs:
               ... on Organization{projectV2(number:$n){id field(name:"Status"){... on ProjectV2SingleSelectField{id options{id name}}}}}}}')"
           PROJECT_ID="$(echo "$BOARD" | jq -r '.data.repositoryOwner.projectV2.id // empty')"
           FIELD_ID="$(echo "$BOARD" | jq -r '.data.repositoryOwner.projectV2.field.id // empty')"
-          [ -n "$PROJECT_ID" ] && [ -n "$FIELD_ID" ] || { echo "::error::Project #$PROJECT_NUMBER of $OWNER or its Status field was not found (check PROJECT_TOKEN and the project number)."; exit 1; }
+          [ -n "$PROJECT_ID" ] && [ -n "$FIELD_ID" ] || { echo "::error::Project #$PROJECT_NUMBER of $OWNER or its Status field was not found (check the GitHub App installation / PROJECT_TOKEN and the project number)."; exit 1; }
 
           OPTION_ID=""
           while IFS=$'\t' read -r id name; do
@@ -154,7 +190,7 @@ jobs:
             ITEM="$(gql -f p="$PROJECT_ID" -f c="$NODE_ID" -f query='
               mutation($p:ID!,$c:ID!){addProjectV2ItemById(input:{projectId:$p,contentId:$c}){item{id
                 status:fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}' 2>&1)" || {
-              echo "::error::Could not add the card of #$N. If this says 'Could not resolve to a node', PROJECT_TOKEN cannot see the issue: a private repository needs the classic PAT scope repo as well as project."
+              echo "::error::Could not add the card of #$N. If this says 'Could not resolve to a node', the token cannot see the issue: a GitHub App needs Issues and Pull requests (read) on the repository, a classic PAT needs the scope repo as well as project."
               echo "$ITEM" | head -3; RC=1; continue; }
             ITEM_ID="$(echo "$ITEM" | jq -r '.data.addProjectV2ItemById.item.id // empty')"
             [ -n "$ITEM_ID" ] || { echo "::error::Could not add/find the card of #$N."; RC=1; continue; }
