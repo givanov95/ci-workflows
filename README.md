@@ -146,6 +146,13 @@ PR only when **all** of these hold: opened by Dependabot, labelled `security` (s
 only — version updates are never touched), a semver level in `allowed-update-types`, and the
 caller's tests passed. Anything else is left open for a human.
 
+A PR that bumps several dependencies at once (a vulnerable package plus its ancestor, a
+`dependabot/…/multi-…` branch) has no `update-type` from `dependabot/fetch-metadata`. For those
+the level is read from the `Updates \`name\` from A to B` lines of Dependabot's commit message:
+the highest level wins, and if any dependency cannot be read (no such line, pre-release or
+non-numeric version, downgrade) the PR stays open. The step is covered by
+`tests/dependabot-security-merge/decide.test.sh` (bash, jq, PyYAML; nothing runs it automatically).
+
 | Input | Default | Description |
 | --- | --- | --- |
 | `allowed-update-types` | `patch,minor` | Semver levels that may be merged automatically. |
