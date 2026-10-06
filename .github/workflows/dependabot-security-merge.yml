@@ -26,7 +26,9 @@ name: Dependabot Security Merge
 #
 # What it merges: a PR opened by Dependabot that is a security update (an ecosystem not
 # configured for version updates in dependabot.yml, or marked as one — see Decide) and bumps patch/minor versions only. Anything else — version
-# updates, majors — is left for a human.
+# updates, majors — is left for a human. A PR that bumps several dependencies has no
+# update-type from fetch-metadata; its level is read from Dependabot's commit message, and
+# the PR is left alone if any dependency cannot be read (see Decide).
 #
 # No personal access token: the merge uses the job's own GITHUB_TOKEN (permissions
 # raised above). A merge made with GITHUB_TOKEN does not trigger `push` workflows, so
@@ -68,6 +70,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          DEPENDENCY_NAMES: ${{ steps.meta.outputs.dependency-names }}
           ECOSYSTEM: ${{ steps.meta.outputs.package-ecosystem }}
           REPO: ${{ github.repository }}
           BASE: ${{ github.event.pull_request.base.ref }}
@@ -75,7 +78,7 @@ jobs:
         run: |
           # Labels and body are read now (not from the event payload): Dependabot may
           # still be labelling the PR, and the caller's tests take minutes anyway.
-          pr="$(gh pr view "$PR_URL" --json labels,body)"
+          pr="$(gh pr view "$PR_URL" --json labels,body,commits)"
           labels="$(jq -r '[.labels[].name] | join(",")' <<<"$pr")"
           echo "labels=$labels update-type=$UPDATE_TYPE"
 
@@ -109,14 +112,79 @@ jobs:
             security=true
           fi
 
+          # major|minor|patch for an upgrade from $1 to $2 (1-3 dot-separated numbers). Fails for
+          # a downgrade or the same version. Every failure is an explicit `return 1`: this runs
+          # on the left of `||`, where `bash -e` does not stop the function by itself.
+          bump_level() {
+            local -a from to
+            local i a b
+            IFS=. read -r -a from <<<"$1" || return 1
+            IFS=. read -r -a to <<<"$2" || return 1
+            for i in 0 1 2; do
+              a=$((10#${from[i]:-0}))
+              b=$((10#${to[i]:-0}))
+              if [ "$b" -gt "$a" ]; then
+                case "$i" in 0) echo major ;; 1) echo minor ;; *) echo patch ;; esac
+                return 0
+              elif [ "$b" -lt "$a" ]; then
+                return 1
+              fi
+            done
+            return 1
+          }
+
+          # The highest bump level over the dependencies named in $1 (comma-separated), read from
+          # the "Updates `name` from A to B" lines of the commit message in $2. Fails — so the PR
+          # stays with a human — when a dependency has no such line, when a line about it is not
+          # exactly in that form (pre-release, non-numeric or 4-part version, trailing text), or
+          # when it is not an upgrade.
+          highest_bump() {
+            local names="$1" message="$2" re prefix name line level rank best=0
+            local -a list
+            local found
+            re='^Updates `([^`]+)` from v?([0-9]+(\.[0-9]+){0,2}) to v?([0-9]+(\.[0-9]+){0,2})$'
+            IFS=',' read -r -a list <<<"$names" || return 1
+            for name in "${list[@]}"; do
+              name="${name#"${name%%[![:space:]]*}"}"
+              name="${name%"${name##*[![:space:]]}"}"
+              [ -n "$name" ] || return 1
+              prefix="Updates \`${name}\` "
+              found=false
+              while IFS= read -r line; do
+                line="${line%$'\r'}"
+                case "$line" in "$prefix"*) ;; *) continue ;; esac
+                [[ "$line" =~ $re ]] || return 1
+                level="$(bump_level "${BASH_REMATCH[2]}" "${BASH_REMATCH[4]}")" || return 1
+                case "$level" in major) rank=3 ;; minor) rank=2 ;; *) rank=1 ;; esac
+                if [ "$rank" -gt "$best" ]; then best=$rank; fi
+                found=true
+              done <<<"$message"
+              [ "$found" = true ] || return 1
+            done
+            case "$best" in 3) echo major ;; 2) echo minor ;; 1) echo patch ;; *) return 1 ;; esac
+          }
+
           level="${UPDATE_TYPE#version-update:semver-}"
+          if [ -z "$level" ]; then
+            # dependabot/fetch-metadata leaves update-type empty when the PR's commit has no
+            # per-dependency update-type — a security update that bumps a package together with
+            # its ancestor (`…/multi-…` branch). Work the level out from the commit message,
+            # which Dependabot wrote and fetch-metadata has verified, not from the PR body
+            # (that carries third-party release notes).
+            level="$(highest_bump "$DEPENDENCY_NAMES" "$(jq -r '(.commits // []) | map(.messageBody // "") | join("\n")' <<<"$pr")")" || level=""
+            echo "update-type is empty — level from the commit message: '${level:-unknown}'"
+          fi
+
           allowed=false
-          if [[ ",$ALLOWED," == *",$level,"* ]]; then
+          if [ -n "$level" ] && [[ ",$ALLOWED," == *",$level,"* ]]; then
             allowed=true
           fi
 
           if [ "$security" != true ]; then
             echo "::notice::Not a security update — left for manual review."
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+          elif [ -z "$level" ]; then
+            echo "::notice::Security update whose bump level could not be determined — left for manual review."
             echo "merge=false" >> "$GITHUB_OUTPUT"
           elif [ "$allowed" != true ]; then
             echo "::notice::Security update with '$level' bump is not in [$ALLOWED] — left for manual review."
