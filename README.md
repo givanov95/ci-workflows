@@ -51,15 +51,30 @@ out-of-order events are harmless.
 | `project-number` | – (required) | The board number (the N in `.../projects/N`). |
 | `project-owner` | repository owner | User or organization that owns the board. |
 | `staging-environment` | `false` | `true` only if a push to `staging` really deploys a staging environment. |
+| `app-client-id` | empty | Client ID of the GitHub App that moves the cards (see below). Empty = use `PROJECT_TOKEN`. |
 
-Secret **`PROJECT_TOKEN`**: a *classic* personal access token with the **`project`** scope
-(`https://github.com/settings/tokens/new?scopes=project,repo&description=gws-board-sync`). The default
-`GITHUB_TOKEN` cannot reach a user-owned board, and fine-grained tokens do not support them.
-For **private repositories** the token also needs **`repo`**: with `project` alone GitHub answers
-`Could not resolve to a node with the global id` because the token cannot see the issue. (A
-public-only setup can stay on `project`.) Use a 1-year expiry and keep the token only in the
-secrets of the repos that call this workflow; only the `Move cards` job reads it. Without the
-secret the workflow prints a notice and stays green.
+The default `GITHUB_TOKEN` cannot reach a Project board, so the job needs one of two tokens. Without
+either, the workflow prints a notice and stays green.
+
+**GitHub App (recommended; the board must be owned by an organization).** Create an App in the
+organization (no webhook) with **Organization permissions → Projects: Read and write** and
+**Repository permissions → Issues: Read-only, Pull requests: Read-only**, and install it on the
+repositories that call this workflow. Pass its **Client ID** as `app-client-id` and its private key
+(PEM) as the secret **`BOARD_APP_KEY`** of each calling repo. The job then mints a 1-hour
+installation token for the board owner with only those three permissions and revokes it at the end
+(`actions/create-github-app-token`, pinned by commit SHA). It takes precedence over `PROJECT_TOKEN`;
+`app-client-id` without the secret fails the job with a clear error. No personal token and no access
+to your other repositories is involved.
+
+**`PROJECT_TOKEN` (legacy; the only option for a *user-owned* board).** A *classic* personal access
+token with the **`project`** scope
+(`https://github.com/settings/tokens/new?scopes=project,repo&description=gws-board-sync`);
+fine-grained tokens and GitHub Apps do not support user-owned boards. For **private repositories** the
+token also needs **`repo`**: with `project` alone GitHub answers `Could not resolve to a node with the
+global id` because the token cannot see the issue. That is access to every private repository of the
+account, so prefer the App. Use a 1-year expiry and keep the token only in the secrets of the repos
+that call this workflow; only the `Move cards` job reads it.
+
 Columns are found by name (emoji ignored): In review, Ready to ship (or Ready for Testing),
 Staging / QA (or Staging), Done.
 
@@ -71,9 +86,11 @@ succeeded (`needs: deploy`), and add a small `board.yml` for the PR events:
   board:
     needs: deploy
     permissions: { contents: read, issues: read, pull-requests: read }
-    uses: givanov95/ci-workflows/.github/workflows/board-sync.yml@v1
-    with: { project-number: 6 }            # staging-environment: true if it has one
-    secrets: { PROJECT_TOKEN: "${{ secrets.PROJECT_TOKEN }}" }
+    uses: givanov95/ci-workflows/.github/workflows/board-sync.yml@<full commit SHA> # v1.4.0
+    with:
+      project-number: 1                    # staging-environment: true if it has one
+      app-client-id: Iv23xxxxxxxxxxxxxxxx  # the GitHub App's Client ID (not a secret)
+    secrets: { BOARD_APP_KEY: "${{ secrets.BOARD_APP_KEY }}" }
 ```
 
 ```yaml
@@ -85,9 +102,11 @@ on:
 jobs:
   board:
     permissions: { contents: read, issues: read, pull-requests: read }
-    uses: givanov95/ci-workflows/.github/workflows/board-sync.yml@v1
-    with: { project-number: 6 }
-    secrets: { PROJECT_TOKEN: "${{ secrets.PROJECT_TOKEN }}" }
+    uses: givanov95/ci-workflows/.github/workflows/board-sync.yml@<full commit SHA> # v1.4.0
+    with:
+      project-number: 1
+      app-client-id: Iv23xxxxxxxxxxxxxxxx
+    secrets: { BOARD_APP_KEY: "${{ secrets.BOARD_APP_KEY }}" }
 ```
 
 A repo with no deploy (a package) can skip the deploy workflow and add `push: branches: [main]` to
@@ -199,9 +218,12 @@ jobs:
 
 Reference a major tag and it tracks the latest compatible release:
 
-- `@v1` — moving major tag (recommended for convenience).
-- `@v1.2.3` — exact release (more reproducible).
-- `@<sha>` — pinned commit (most secure).
+- `@v1` — moving major tag (convenient; **not for workflows that receive secrets**, such as
+  `board-sync.yml`). It stays at the 1.3.0 state and does not know the GitHub App inputs.
+- `@v1.4.0` — exact release (reproducible). Release tags `v*.*.*` are protected by a ruleset: they
+  cannot be moved or deleted.
+- `@<sha>` — pinned commit (most secure). Use this, with the release in a comment, for every workflow
+  that passes secrets: whoever can move a tag would otherwise choose the code that runs with them.
 
 When this repo is **public**, any repo can call its workflows. If you ever make it private,
 enable *Settings → Actions → Access* on this repo to allow your other repos to use it.
