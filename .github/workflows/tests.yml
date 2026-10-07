@@ -1,0 +1,38 @@
+name: Tests
+
+# Runs tests/dependabot-security-merge/decide.test.sh: the "Decide" step of
+# dependabot-security-merge.yml lifted out and run with `gh` stubbed, so nothing here touches
+# GitHub. This is this repo's own CI, not a reusable workflow (no `workflow_call`).
+on:
+  pull_request:
+    paths:
+      - .github/workflows/dependabot-security-merge.yml
+      - .github/workflows/tests.yml
+      - tests/**
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/dependabot-security-merge.yml
+      - .github/workflows/tests.yml
+      - tests/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  decide:
+    name: dependabot-security-merge Decide
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # bash, jq and python3 + PyYAML are on ubuntu-latest; the test needs nothing else.
+      - name: Run decide.test.sh
+        run: bash tests/dependabot-security-merge/decide.test.sh
