@@ -190,7 +190,7 @@ jobs:
       contents: write
       pull-requests: write
       actions: write
-    uses: givanov95/ci-workflows/.github/workflows/dependabot-security-merge.yml@v1
+    uses: givanov95/ci-workflows/.github/workflows/dependabot-security-merge.yml@<commit-sha>  # v1.5.1
     with:
       deploy-workflow: deploy.yml
 ```
@@ -246,12 +246,15 @@ concurrency:
 
 Reference a major tag and it tracks the latest compatible release:
 
-- `@v1` — moving major tag (convenient; **not for workflows that receive secrets**, such as
-  `board-sync.yml`). It stays at the 1.3.0 state and does not know the GitHub App inputs.
-- `@v1.4.0` — exact release (reproducible). Release tags `v*.*.*` are protected by a ruleset: they
-  cannot be moved or deleted.
+- `@v1` — moving major tag: always the latest 1.x release. Convenient, and fine for the workflows
+  that only read (`php-package.yml`, `laravel-app.yml`, `post-deploy-check.yml`). **Not for workflows
+  that receive secrets or a write token** (`board-sync.yml`, `dependabot-security-merge.yml`).
+- `@v1.5.1` — exact release (reproducible). Release tags `v*.*.*` are protected by a ruleset: they
+  cannot be moved or deleted. The moving `v1` is not covered by it; it is moved by hand to each new
+  release.
 - `@<sha>` — pinned commit (most secure). Use this, with the release in a comment, for every workflow
-  that passes secrets: whoever can move a tag would otherwise choose the code that runs with them.
+  that passes secrets or a write token: whoever can move a tag would otherwise choose the code that
+  runs with them. Dependabot's `github-actions` ecosystem keeps such a pin current.
 
 When this repo is **public**, any repo can call its workflows. If you ever make it private,
 enable *Settings → Actions → Access* on this repo to allow your other repos to use it.
