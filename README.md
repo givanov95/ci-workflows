@@ -198,6 +198,63 @@ jobs:
 Also enable *Dependabot alerts* and *Dependabot security updates* on the repo
 (`gh api -X PUT repos/OWNER/REPO/vulnerability-alerts` and `.../automated-security-fixes`).
 
+## Composite actions — the same work without a job of its own
+
+Every job is billed at least one whole minute, however short. Moving a board card (~10 s) or polling
+a health URL in a job of its own therefore costs a full minute each time. The composite actions in
+`.github/actions/` do exactly what `board-sync.yml` and `post-deploy-check.yml` do, but as **steps**
+of a job that runs anyway (the deploy job), so they cost nothing extra:
+
+| Action | Same as | Inputs |
+|---|---|---|
+| `.github/actions/board-sync` | `board-sync.yml` | `project-number`, `project-owner`, `staging-environment` (`'true'`/`'false'`), `app-client-id`, `app-private-key` (the `BOARD_APP_KEY` secret), `project-token` |
+| `.github/actions/health-check` | `post-deploy-check.yml` | `url`, `expected-status`, `attempts`, `interval`, `initial-delay`, `soft`; output `healthy` |
+
+A deploy job with a baseline, the deploy, the verdict and the cards in one runner:
+
+```yaml
+jobs:
+  ci-deploy:
+    runs-on: ubuntu-latest
+    permissions: { contents: read, issues: read, pull-requests: read }
+    outputs:   # for a rollback job: needs.ci-deploy.outputs.*
+      pre_healthy: ${{ steps.pre.outputs.healthy }}
+      deployed: ${{ steps.deploy.outcome == 'success' }}
+      healthy: ${{ steps.health.outputs.healthy }}
+    steps:
+      # ...checkout, tests, build...
+      - id: pre
+        uses: givanov95/ci-workflows/.github/actions/health-check@<sha> # v1.6.0
+        with: { url: https://example.com/up, attempts: 1, soft: true }
+      - id: deploy
+        run: ssh ... deploy
+      - id: health
+        uses: givanov95/ci-workflows/.github/actions/health-check@<sha> # v1.6.0
+        with: { url: https://example.com/up, initial-delay: 10 }
+      - uses: givanov95/ci-workflows/.github/actions/board-sync@<sha> # v1.6.0
+        with:
+          project-number: 1
+          app-client-id: Iv23liy46aBedLh9vZoN
+          app-private-key: ${{ secrets.BOARD_APP_KEY }}
+```
+
+A board job that would do nothing is cheapest when it never starts: a job-level `if:` that is false
+skips the job without a runner. The script only acts on a PR that is opened / reopened / ready for
+review and not a draft, or merged into `dev`, and on a push whose commits mention `#N`:
+
+```yaml
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]   # + closed only where PRs merge into dev
+jobs:
+  board:
+    if: github.event.pull_request.user.login != 'dependabot[bot]' && !github.event.pull_request.draft
+```
+
+The reusable workflows stay for existing callers; the logic is kept identical in both
+(`.github/actions/board-sync/sync.sh` is the script of `board-sync.yml`). `actions-self-test.yml`
+runs both actions on every change to them.
+
 ## Usage
 
 Add a tiny caller workflow to the consuming repo.
