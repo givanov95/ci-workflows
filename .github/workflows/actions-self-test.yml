@@ -1,0 +1,97 @@
+name: Actions self-test
+
+# Runs the composite actions (.github/actions/*) from this checkout. This is this repo's own CI,
+# not a reusable workflow. The board-sync cases run without a board token, so nothing is moved.
+on:
+  pull_request:
+    paths:
+      - .github/actions/**
+      - .github/workflows/actions-self-test.yml
+  push:
+    branches: [main]
+    paths:
+      - .github/actions/**
+      - .github/workflows/actions-self-test.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  self-test:
+    name: Composite actions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: health-check — a healthy URL
+        id: ok
+        uses: ./.github/actions/health-check
+        with:
+          url: https://github.com
+          attempts: 2
+          interval: 1
+
+      - name: health-check — another expected status
+        id: expected
+        uses: ./.github/actions/health-check
+        with:
+          url: https://github.com/givanov95/ci-workflows/this-page-does-not-exist
+          expected-status: '404'
+          attempts: 2
+          interval: 1
+
+      - name: health-check — soft, unhealthy
+        id: soft
+        uses: ./.github/actions/health-check
+        with:
+          url: https://github.com/givanov95/ci-workflows/this-page-does-not-exist
+          attempts: 2
+          interval: 1
+          soft: true
+
+      - name: health-check — hard, unhealthy (must fail)
+        id: hard
+        continue-on-error: true
+        uses: ./.github/actions/health-check
+        with:
+          url: https://github.com/givanov95/ci-workflows/this-page-does-not-exist
+          attempts: 1
+
+      - name: board-sync — no token is a green no-op
+        uses: ./.github/actions/board-sync
+        with:
+          project-number: 1
+
+      - name: board-sync — an App id without its key (must fail)
+        id: nokey
+        continue-on-error: true
+        uses: ./.github/actions/board-sync
+        with:
+          project-number: 1
+          app-client-id: Iv00000000000000000
+
+      - name: Check the outcomes
+        env:
+          OK: ${{ steps.ok.outputs.healthy }}
+          EXPECTED: ${{ steps.expected.outputs.healthy }}
+          SOFT: ${{ steps.soft.outputs.healthy }}
+          SOFT_OUTCOME: ${{ steps.soft.outcome }}
+          HARD_OUTCOME: ${{ steps.hard.outcome }}
+          HARD: ${{ steps.hard.outputs.healthy }}
+          NOKEY_OUTCOME: ${{ steps.nokey.outcome }}
+        run: |
+          fail=0
+          check() { if [ "$2" = "$3" ]; then echo "ok   $1 = $2"; else echo "FAIL $1 = '$2', expected '$3'"; fail=1; fi; }
+          check "healthy URL"             "$OK" true
+          check "expected 404"            "$EXPECTED" true
+          check "soft: healthy"           "$SOFT" false
+          check "soft: step outcome"      "$SOFT_OUTCOME" success
+          check "hard: step outcome"      "$HARD_OUTCOME" failure
+          check "hard: healthy"           "$HARD" false
+          check "board: App id, no key"   "$NOKEY_OUTCOME" failure
+          exit "$fail"

@@ -1,0 +1,82 @@
+name: Board sync
+description: >-
+  Moves the cards of the issues a PR / push refers to on a GitHub Project board, as a step of an
+  existing job. The same logic as the reusable workflow board-sync.yml, without a runner of its own.
+
+# Use it as the last step of a job that runs anyway (e.g. after the deploy), so moving the cards
+# costs no extra billed minute:
+#
+#   - uses: givanov95/ci-workflows/.github/actions/board-sync@<sha> # v1.6.0
+#     with:
+#       project-number: 1
+#       app-client-id: Iv23liy46aBedLh9vZoN
+#       app-private-key: ${{ secrets.BOARD_APP_KEY }}
+#
+# The job needs `contents: read, issues: read, pull-requests: read`. Events, columns, tokens and
+# the forward-only rule are those of board-sync.yml (see README).
+
+inputs:
+  project-number:
+    description: Number of the Project board (the N in .../projects/N).
+    required: true
+  project-owner:
+    description: User or organization that owns the board. Defaults to the repository owner.
+    default: ''
+  staging-environment:
+    description: Set 'true' only if pushes to `staging` deploy a real staging environment.
+    default: 'false'
+  app-client-id:
+    description: Client ID of the GitHub App that moves the cards (needs app-private-key). Leave empty to use project-token.
+    default: ''
+  app-private-key:
+    description: Private key (PEM) of the GitHub App named by app-client-id (pass a secret, e.g. secrets.BOARD_APP_KEY).
+    default: ''
+  project-token:
+    description: Legacy - classic PAT, scope `project`, plus `repo` for private repositories.
+    default: ''
+  github-token:
+    description: Token that reads the PR, its commits and the issues of this repository.
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check the GitHub App configuration
+      if: ${{ inputs.app-client-id != '' && inputs.app-private-key == '' }}
+      shell: bash
+      run: |
+        echo "::error title=Board sync::app-client-id is set but app-private-key is empty (pass the BOARD_APP_KEY secret)."
+        exit 1
+
+    - name: Create a GitHub App installation token
+      id: app
+      if: ${{ inputs.app-client-id != '' && inputs.app-private-key != '' }}
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      with:
+        client-id: ${{ inputs.app-client-id }}
+        private-key: ${{ inputs.app-private-key }}
+        owner: ${{ inputs.project-owner != '' && inputs.project-owner || github.repository_owner }}
+        permission-organization-projects: write
+        permission-issues: read
+        permission-pull-requests: read
+
+    - name: Work out the target column and move the cards
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PROJECT_TOKEN: ${{ steps.app.outputs.token || inputs.project-token }}
+        EVENT_NAME: ${{ github.event_name }}
+        REPO: ${{ github.repository }}
+        REPO_OWNER: ${{ github.repository_owner }}
+        REF_NAME: ${{ github.ref_name }}
+        SHA: ${{ github.sha }}
+        BEFORE: ${{ github.event.before }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        PR_ACTION: ${{ github.event.action }}
+        PR_BASE: ${{ github.event.pull_request.base.ref }}
+        PR_MERGED: ${{ github.event.pull_request.merged }}
+        PR_DRAFT: ${{ github.event.pull_request.draft }}
+        PROJECT_NUMBER: ${{ inputs.project-number }}
+        PROJECT_OWNER: ${{ inputs.project-owner }}
+        STAGING_ENV: ${{ inputs.staging-environment }}
+      run: bash "$GITHUB_ACTION_PATH/sync.sh"
