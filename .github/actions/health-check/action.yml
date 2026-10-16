@@ -1,0 +1,79 @@
+name: Health check
+description: >-
+  Polls a URL until it answers the expected status, as a step of an existing job. The same check
+  as the reusable workflow post-deploy-check.yml, without a runner of its own.
+
+# A baseline before the deploy and the verdict after it, in the deploy job itself:
+#
+#   - id: pre
+#     uses: givanov95/ci-workflows/.github/actions/health-check@<sha> # v1.6.0
+#     with: { url: https://example.com/up, attempts: 1, soft: true }
+#   - ...deploy...
+#   - uses: givanov95/ci-workflows/.github/actions/health-check@<sha> # v1.6.0
+#     with: { url: https://example.com/up, initial-delay: 10 }
+#
+# With `soft: true` it never fails; read the `healthy` output instead.
+
+inputs:
+  url:
+    description: Health URL to poll (e.g. https://example.com/up).
+    required: true
+  expected-status:
+    description: HTTP status that means healthy.
+    default: '200'
+  attempts:
+    description: How many times to try before giving up.
+    default: '12'
+  interval:
+    description: Seconds between attempts.
+    default: '10'
+  initial-delay:
+    description: Seconds to wait before the first attempt (the app may still be restarting).
+    default: '0'
+  soft:
+    description: Report only (healthy output), never fail the step.
+    default: 'false'
+
+outputs:
+  healthy:
+    description: '"true" if the URL answered the expected status, otherwise "false".'
+    value: ${{ steps.poll.outputs.healthy }}
+
+runs:
+  using: composite
+  steps:
+    - name: Poll ${{ inputs.url }}
+      id: poll
+      shell: bash
+      env:
+        URL: ${{ inputs.url }}
+        EXPECTED: ${{ inputs.expected-status }}
+        ATTEMPTS: ${{ inputs.attempts }}
+        INTERVAL: ${{ inputs.interval }}
+        INITIAL_DELAY: ${{ inputs.initial-delay }}
+        SOFT: ${{ inputs.soft }}
+      run: |
+        if [ "$INITIAL_DELAY" -gt 0 ]; then sleep "$INITIAL_DELAY"; fi
+
+        healthy=false
+        status=000
+        for i in $(seq 1 "$ATTEMPTS"); do
+          status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$URL" || true)"
+          echo "attempt $i/$ATTEMPTS: HTTP $status"
+          if [ "$status" = "$EXPECTED" ]; then
+            healthy=true
+            break
+          fi
+          if [ "$i" -lt "$ATTEMPTS" ]; then sleep "$INTERVAL"; fi
+        done
+
+        echo "healthy=$healthy" >> "$GITHUB_OUTPUT"
+
+        if [ "$healthy" = true ]; then
+          echo "::notice::$URL is healthy (HTTP $status)."
+        elif [ "$SOFT" = true ]; then
+          echo "::warning::$URL is NOT healthy (last HTTP $status) — soft check, not failing."
+        else
+          echo "::error::$URL did not answer HTTP $EXPECTED after $ATTEMPTS attempts (last HTTP $status)."
+          exit 1
+        fi
