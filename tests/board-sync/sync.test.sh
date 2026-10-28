@@ -73,6 +73,10 @@ echo "$bot" > "$work/bot.json"
 jq -n --argjson h "$human" --argjson b "$bot" --argjson u "$bot_unlinked" '{commits: [$h, $b, $u]}' > "$work/compare-mixed.json"
 jq -n --argjson b "$bot" --argjson u "$bot_unlinked" '{commits: [$b, $u]}' > "$work/compare-bot.json"
 echo '[]' > "$work/no-commits.json"
+echo '{"commits": null}' > "$work/compare-null.json"
+echo '{"message": "Not Found"}' > "$work/not-found.json"
+# the commits of a dev -> main release PR: a human fix and the squash commit of a Dependabot PR
+jq -n --argjson b "$bot" '[{author: {login: "givanov95"}, commit: {author: {name: "Georgi Ivanov"}, message: "fix(y): another\n\nFixes #6"}}, $b]' > "$work/release-pr-commits.json"
 
 pr_event() { # pr_event <title> <body> -> path of an event payload
     local file="$work/event.$RANDOM.json"
@@ -106,6 +110,7 @@ expect() {
         [ "$rc" = "$want_rc" ] || errors+=("exit $rc, expected $want_rc")
         [ "${moved:--}" = "$want_moved" ] || errors+=("moved '${moved:--}', expected '$want_moved'")
         if env "$@" bash -c '[ -n "${NO_GH:-}" ]' && [ -s "$work/calls" ]; then errors+=("gh was called"); fi
+        if grep -q 'integer expression\|parse error' "$work/log"; then errors+=("shell/jq error in the log"); fi
         local notice
         notice=$(env "$@" bash -c 'printf %s "${NOTICE:-}"')
         if [ -n "$notice" ] && ! grep -qF "$notice" "$work/log"; then errors+=("no notice '$notice'"); fi
@@ -139,6 +144,14 @@ expect 'new branch, its only commit is Dependabot'  0 - BEFORE=00000000000000000
 expect 'new branch, a human commit'                 0 5 BEFORE=0000000000000000000000000000000000000000
 expect 'compare fails, falls back to the commit'    0 - FIXTURE_COMPARE= FIXTURE_COMMIT="$work/bot.json"
 expect 'compare fails, human commit'                0 5 FIXTURE_COMPARE=
+
+expect 'compare returns no commit list'             0 - FIXTURE_COMPARE="$work/compare-null.json" NOTICE='no Fixes/Closes/Resolves'
+
+# ── PR: Dependabot commits inside a human PR are ignored too ─────────────────────────────────
+expect 'release PR dev -> main with a Dependabot commit' 0 '5 6' EVENT_NAME=pull_request PR_ACTION=opened PR_DRAFT=false PR_BASE=main \
+    FIXTURE_PR_COMMITS="$work/release-pr-commits.json" NOTICE='1 Dependabot commit(s) ignored'
+expect 'PR commits cannot be read'                  0 5 EVENT_NAME=pull_request PR_ACTION=opened PR_DRAFT=false PR_BASE=main \
+    FIXTURE_PR_COMMITS="$work/not-found.json"
 
 # ── unchanged behaviour ──────────────────────────────────────────────────────────────────────
 expect 'human PR opened'                            0 5 EVENT_NAME=pull_request PR_ACTION=opened PR_DRAFT=false PR_BASE=main

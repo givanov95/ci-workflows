@@ -44,7 +44,8 @@ runs:
   steps:
     - name: Create a GitHub App installation token
       id: app
-      if: ${{ inputs.app-client-id != '' && inputs.app-private-key != '' }}
+      # not on a Dependabot run: the script skips it anyway (a stale Dependabot secret must not fail it)
+      if: ${{ inputs.app-client-id != '' && inputs.app-private-key != '' && github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' }}
       uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
       with:
         client-id: ${{ inputs.app-client-id }}

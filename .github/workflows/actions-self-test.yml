@@ -85,7 +85,7 @@ jobs:
           HARD_OUTCOME: ${{ steps.hard.outcome }}
           HARD: ${{ steps.hard.outputs.healthy }}
           NOKEY_OUTCOME: ${{ steps.nokey.outcome }}
-          NOKEY_WANT: ${{ github.actor == 'dependabot[bot]' && 'success' || 'failure' }}
+          NOKEY_WANT: ${{ (github.actor == 'dependabot[bot]' || github.event.pull_request.user.login == 'dependabot[bot]') && 'success' || 'failure' }}
         run: |
           fail=0
           check() { if [ "$2" = "$3" ]; then echo "ok   $1 = $2"; else echo "FAIL $1 = '$2', expected '$3'"; fail=1; fi; }
