@@ -1,17 +1,20 @@
 name: Actions self-test
 
-# Runs the composite actions (.github/actions/*) from this checkout. This is this repo's own CI,
-# not a reusable workflow. The board-sync cases run without a board token, so nothing is moved.
+# Runs the composite actions (.github/actions/*) from this checkout, and board-sync.yml, which
+# checks out and runs the board-sync action of its own commit. This is this repo's own CI, not a
+# reusable workflow. The board-sync cases run without a board token, so nothing is moved.
 on:
   pull_request:
     paths:
       - .github/actions/**
       - .github/workflows/actions-self-test.yml
+      - .github/workflows/board-sync.yml
   push:
     branches: [main]
     paths:
       - .github/actions/**
       - .github/workflows/actions-self-test.yml
+      - .github/workflows/board-sync.yml
 
 permissions:
   contents: read
@@ -97,3 +100,15 @@ jobs:
           check "hard: healthy"           "$HARD" false
           check "board: App id, no key"   "$NOKEY_OUTCOME" "$NOKEY_WANT"
           exit "$fail"
+
+  # board-sync.yml checks out the action from its own commit (job.workflow_sha) and runs it. Without
+  # a token that is a green no-op, so this job proves the checkout and the wiring work.
+  board-sync-workflow:
+    name: board-sync.yml
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    uses: ./.github/workflows/board-sync.yml
+    with:
+      project-number: 1

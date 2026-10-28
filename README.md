@@ -81,10 +81,18 @@ Columns are found by name (emoji ignored): In review, Ready to ship (or Ready fo
 Staging / QA (or Staging), Done.
 
 **Dependabot.** A run whose actor or PR author is `dependabot[bot]` (including a Dependabot PR merged
-by a human) prints a notice and stays green without moving anything: Dependabot runs get only
-Dependabot secrets, so there is no board key, and Dependabot PRs quote upstream release notes whose
-`Fixes #N` point at another repository. On a push, commits authored by Dependabot (also the squash
-commit of its PR) are ignored for the same reason. Callers need no `if:` for Dependabot.
+by a human) moves nothing: Dependabot runs get only Dependabot secrets, so there is no board key, and
+Dependabot PRs quote upstream release notes whose `Fixes #N` point at another repository.
+`board-sync.yml` skips such a run at job level, without a runner; the composite action prints a
+notice and stays green. Commits authored by Dependabot (also the squash commit of its PR) are ignored
+on a push and in the commits of a PR for the same reason. Callers need no `if:` for Dependabot.
+On a Dependabot run the job of `board-sync.yml` is therefore *skipped*, not *success*: a caller job
+with `needs:` on it is skipped too unless it has its own `if: always()` (or checks `needs.<job>.result`).
+
+This relies on Dependabot's commits reaching `main` as they are: a fast-forward or a merge commit,
+as `/gws:ship` does. If a `dev` → `main` PR were squash-merged, GitHub would join the messages of all
+its commits, Dependabot's release notes included, into one commit authored by the person merging,
+and those references would count.
 
 For a repo that deploys, call it from the deploy workflow so a card moves only after the deploy
 succeeded (`needs: deploy`), and add a small `board.yml` for the PR events:
@@ -94,7 +102,7 @@ succeeded (`needs: deploy`), and add a small `board.yml` for the PR events:
   board:
     needs: deploy
     permissions: { contents: read, issues: read, pull-requests: read }
-    uses: givanov95/ci-workflows/.github/workflows/board-sync.yml@<full commit SHA> # v1.4.0
+    uses: givanov95/ci-workflows/.github/workflows/board-sync.yml@<full commit SHA> # v1.8.0
     with:
       project-number: 1                    # staging-environment: true if it has one
       app-client-id: Iv23xxxxxxxxxxxxxxxx  # the GitHub App's Client ID (not a secret)
@@ -110,7 +118,7 @@ on:
 jobs:
   board:
     permissions: { contents: read, issues: read, pull-requests: read }
-    uses: givanov95/ci-workflows/.github/workflows/board-sync.yml@<full commit SHA> # v1.4.0
+    uses: givanov95/ci-workflows/.github/workflows/board-sync.yml@<full commit SHA> # v1.8.0
     with:
       project-number: 1
       app-client-id: Iv23xxxxxxxxxxxxxxxx
@@ -230,14 +238,14 @@ jobs:
     steps:
       # ...checkout, tests, build...
       - id: pre
-        uses: givanov95/ci-workflows/.github/actions/health-check@<sha> # v1.6.0
+        uses: givanov95/ci-workflows/.github/actions/health-check@<sha> # v1.8.0
         with: { url: https://example.com/up, attempts: 1, soft: true }
       - id: deploy
         run: ssh ... deploy
       - id: health
-        uses: givanov95/ci-workflows/.github/actions/health-check@<sha> # v1.6.0
+        uses: givanov95/ci-workflows/.github/actions/health-check@<sha> # v1.8.0
         with: { url: https://example.com/up, initial-delay: 10 }
-      - uses: givanov95/ci-workflows/.github/actions/board-sync@<sha> # v1.6.0
+      - uses: givanov95/ci-workflows/.github/actions/board-sync@<sha> # v1.8.0
         with:
           project-number: 1
           app-client-id: Iv23liy46aBedLh9vZoN
@@ -246,21 +254,27 @@ jobs:
 
 A board job that would do nothing is cheapest when it never starts: a job-level `if:` that is false
 skips the job without a runner. The script only acts on a PR that is opened / reopened / ready for
-review and not a draft, or merged into `dev`, and on a push whose commits mention `#N`. It is a green
-no-op for Dependabot either way, so the `if:` below only saves the billed minute:
+review and not a draft, or merged into `dev`, and on a push whose commits mention `#N`. A job that
+calls `board-sync.yml` only needs to leave out drafts (that workflow skips Dependabot itself); a job
+that runs the composite action as a step should leave out Dependabot as well, since the action can
+only no-op once its runner is up:
 
 ```yaml
 on:
   pull_request:
     types: [opened, reopened, ready_for_review]   # + closed only where PRs merge into dev
 jobs:
-  board:
-    if: github.event.pull_request.user.login != 'dependabot[bot]' && !github.event.pull_request.draft
+  board:   # calls board-sync.yml
+    if: ${{ !github.event.pull_request.draft }}
+  # a job that runs .github/actions/board-sync as a step:
+  #   if: github.event.pull_request.user.login != 'dependabot[bot]' && !github.event.pull_request.draft
 ```
 
-The reusable workflows stay for existing callers; the logic is kept identical in both
-(`.github/actions/board-sync/sync.sh` is the script of `board-sync.yml`; `tests/board-sync/sync.test.sh`
-runs the same cases against both). `actions-self-test.yml` runs both actions on every change to them.
+The reusable workflows stay for existing callers. The board logic exists once, in
+`.github/actions/board-sync/sync.sh`: `board-sync.yml` checks out that action from its own commit
+(`job.workflow_repository` at `job.workflow_sha`) and runs it, so a caller pinned to a SHA runs
+exactly that code. `tests/board-sync/sync.test.sh` covers the script; `actions-self-test.yml` runs
+both actions and `board-sync.yml` on every change to them.
 
 ## Usage
 
@@ -321,7 +335,9 @@ Reference a major tag and it tracks the latest compatible release:
   runs with them. Dependabot's `github-actions` ecosystem keeps such a pin current.
 
 When this repo is **public**, any repo can call its workflows. If you ever make it private,
-enable *Settings → Actions → Access* on this repo to allow your other repos to use it.
+enable *Settings → Actions → Access* on this repo to allow your other repos to use it. That is not
+enough for `board-sync.yml`: it also *checks out* this repo with the caller's `GITHUB_TOKEN`, which
+cannot read another private repository, so it would need a token with access passed in as well.
 
 ## Which workflow per project
 

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# Checks the board-sync script: the "Work out the target column and move the cards" step of
-# .github/workflows/board-sync.yml and its copy .github/actions/board-sync/sync.sh. Every case runs
-# against both, so the two cannot drift apart. `gh` is stubbed, so nothing here touches GitHub.
+# Checks .github/actions/board-sync/sync.sh, the board-sync script of both the composite action and
+# .github/workflows/board-sync.yml (which runs that action). `gh` is stubbed, so nothing here
+# touches GitHub.
 #
 #   tests/board-sync/sync.test.sh
 #
-# Needs bash, jq and python3 with PyYAML.
+# Needs bash and jq.
 
 set -uo pipefail
 
@@ -15,14 +15,7 @@ root="$here/../.."
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-python3 - "$root/.github/workflows/board-sync.yml" > "$work/workflow.sh" <<'PY'
-import sys
-import yaml
-
-steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["sync"]["steps"]
-print(next(step for step in steps if step.get("name", "").startswith("Work out"))["run"])
-PY
-cp "$root/.github/actions/board-sync/sync.sh" "$work/action.sh"
+script="$root/.github/actions/board-sync/sync.sh"
 
 mkdir "$work/bin"
 cat > "$work/bin/gh" <<'STUB'
@@ -93,37 +86,33 @@ failed=0
 #   VAR=value overrides the environment of the step; NO_GH=1 also asserts `gh` was never called and
 #   NOTICE=<text> that this notice was printed.
 expect() {
-    local name=$1 want_rc=$2 want_moved=$3 script rc moved
+    local name=$1 want_rc=$2 want_moved=$3 rc moved notice errors=()
     shift 3
-    for script in workflow action; do
-        : > "$work/calls"
-        env -i PATH="$work/bin:$PATH" CALLS="$work/calls" GITHUB_EVENT_PATH="$human_pr" \
-            GH_TOKEN=x PROJECT_TOKEN=board-token APP_CLIENT_ID= HAS_APP_KEY=false ACTOR=givanov95 PR_AUTHOR= \
-            EVENT_NAME=push REPO=o/r REPO_OWNER=o REF_NAME=main SHA=abc BEFORE=def \
-            PR_NUMBER= PR_ACTION= PR_BASE= PR_MERGED= PR_DRAFT= PROJECT_NUMBER=1 PROJECT_OWNER= STAGING_ENV=false \
-            FIXTURE_COMPARE="$work/compare-mixed.json" FIXTURE_COMMIT="$work/human.json" \
-            FIXTURE_PR_COMMITS="$work/no-commits.json" NO_GH= NOTICE= \
-            "$@" bash -e "$work/$script.sh" > "$work/log" 2>&1
-        rc=$?
-        moved=$(sed -n 's/^moved //p' "$work/calls" | sort -n | tr '\n' ' ' | sed 's/ $//')
-        local errors=()
-        [ "$rc" = "$want_rc" ] || errors+=("exit $rc, expected $want_rc")
-        [ "${moved:--}" = "$want_moved" ] || errors+=("moved '${moved:--}', expected '$want_moved'")
-        if env "$@" bash -c '[ -n "${NO_GH:-}" ]' && [ -s "$work/calls" ]; then errors+=("gh was called"); fi
-        if grep -q 'integer expression\|parse error' "$work/log"; then errors+=("shell/jq error in the log"); fi
-        local notice
-        notice=$(env "$@" bash -c 'printf %s "${NOTICE:-}"')
-        if [ -n "$notice" ] && ! grep -qF "$notice" "$work/log"; then errors+=("no notice '$notice'"); fi
+    : > "$work/calls"
+    env -i PATH="$work/bin:$PATH" CALLS="$work/calls" GITHUB_EVENT_PATH="$human_pr" \
+        GH_TOKEN=x PROJECT_TOKEN=board-token APP_CLIENT_ID= HAS_APP_KEY=false ACTOR=givanov95 PR_AUTHOR= \
+        EVENT_NAME=push REPO=o/r REPO_OWNER=o REF_NAME=main SHA=abc BEFORE=def \
+        PR_NUMBER= PR_ACTION= PR_BASE= PR_MERGED= PR_DRAFT= PROJECT_NUMBER=1 PROJECT_OWNER= STAGING_ENV=false \
+        FIXTURE_COMPARE="$work/compare-mixed.json" FIXTURE_COMMIT="$work/human.json" \
+        FIXTURE_PR_COMMITS="$work/no-commits.json" NO_GH= NOTICE= \
+        "$@" bash "$script" > "$work/log" 2>&1
+    rc=$?
+    moved=$(sed -n 's/^moved //p' "$work/calls" | sort -n | tr '\n' ' ' | sed 's/ $//')
+    [ "$rc" = "$want_rc" ] || errors+=("exit $rc, expected $want_rc")
+    [ "${moved:--}" = "$want_moved" ] || errors+=("moved '${moved:--}', expected '$want_moved'")
+    if env "$@" bash -c '[ -n "${NO_GH:-}" ]' && [ -s "$work/calls" ]; then errors+=("gh was called"); fi
+    if grep -q 'integer expression\|parse error' "$work/log"; then errors+=("shell/jq error in the log"); fi
+    notice=$(env "$@" bash -c 'printf %s "${NOTICE:-}"')
+    if [ -n "$notice" ] && ! grep -qF "$notice" "$work/log"; then errors+=("no notice '$notice'"); fi
 
-        if [ ${#errors[@]} -eq 0 ]; then
-            passed=$((passed + 1))
-        else
-            failed=$((failed + 1))
-            echo "FAIL [$script]: $name — ${errors[*]}"
-            sed 's/^/    | /' "$work/log"
-            sed 's/^/    gh| /' "$work/calls"
-        fi
-    done
+    if [ ${#errors[@]} -eq 0 ]; then
+        passed=$((passed + 1))
+    else
+        failed=$((failed + 1))
+        echo "FAIL: $name — ${errors[*]}"
+        sed 's/^/    | /' "$work/log"
+        sed 's/^/    gh| /' "$work/calls"
+    fi
 }
 
 # ── Dependabot runs: a green no-op, whatever the token setup ──────────────────────────────────

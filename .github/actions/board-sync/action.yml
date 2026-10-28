@@ -1,12 +1,12 @@
 name: Board sync
 description: >-
   Moves the cards of the issues a PR / push refers to on a GitHub Project board, as a step of an
-  existing job. The same logic as the reusable workflow board-sync.yml, without a runner of its own.
+  existing job. The reusable workflow board-sync.yml runs this same action in a job of its own.
 
 # Use it as the last step of a job that runs anyway (e.g. after the deploy), so moving the cards
 # costs no extra billed minute:
 #
-#   - uses: givanov95/ci-workflows/.github/actions/board-sync@<sha> # v1.6.0
+#   - uses: givanov95/ci-workflows/.github/actions/board-sync@<sha> # v1.8.0
 #     with:
 #       project-number: 1
 #       app-client-id: Iv23liy46aBedLh9vZoN
@@ -14,7 +14,7 @@ description: >-
 #
 # The job needs `contents: read, issues: read, pull-requests: read`. Events, columns, tokens and
 # the forward-only rule are those of board-sync.yml (see README).
-# Dependabot runs are a green no-op and Dependabot's commits are ignored on push (see board-sync.yml).
+# Dependabot runs are a green no-op, and Dependabot's commits are ignored on push and in PR commits.
 
 inputs:
   project-number:
