@@ -75,6 +75,12 @@ jobs:
     steps:
       # The script lives only in the composite action. Check it out from the commit of THIS workflow
       # (not the caller's repo, not a moving tag), so a caller pinned to a SHA runs exactly that code.
+      - name: Check that the workflow knows its own commit
+        if: ${{ job.workflow_repository == '' || job.workflow_sha == '' }}
+        run: |
+          echo "::error title=Board sync::job.workflow_repository / job.workflow_sha are empty, so the board-sync action of this workflow cannot be checked out."
+          exit 1
+
       - name: Check out the board-sync action of this workflow's commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
