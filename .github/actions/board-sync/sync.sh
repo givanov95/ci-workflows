@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Board sync (see action.yml). The same logic as .github/workflows/board-sync.yml, run as a step.
+# Board sync (see action.yml). The only copy of the logic: .github/workflows/board-sync.yml runs this action.
 set -euo pipefail
 notice() { echo "::notice title=Board sync::$*"; }
 

@@ -81,10 +81,16 @@ Columns are found by name (emoji ignored): In review, Ready to ship (or Ready fo
 Staging / QA (or Staging), Done.
 
 **Dependabot.** A run whose actor or PR author is `dependabot[bot]` (including a Dependabot PR merged
-by a human) prints a notice and stays green without moving anything: Dependabot runs get only
-Dependabot secrets, so there is no board key, and Dependabot PRs quote upstream release notes whose
-`Fixes #N` point at another repository. On a push, commits authored by Dependabot (also the squash
-commit of its PR) are ignored for the same reason. Callers need no `if:` for Dependabot.
+by a human) moves nothing: Dependabot runs get only Dependabot secrets, so there is no board key, and
+Dependabot PRs quote upstream release notes whose `Fixes #N` point at another repository.
+`board-sync.yml` skips such a run at job level, without a runner; the composite action prints a
+notice and stays green. Commits authored by Dependabot (also the squash commit of its PR) are ignored
+on a push and in the commits of a PR for the same reason. Callers need no `if:` for Dependabot.
+
+This relies on Dependabot's commits reaching `main` as they are: a fast-forward or a merge commit,
+as `/gws:ship` does. If a `dev` → `main` PR were squash-merged, GitHub would join the messages of all
+its commits, Dependabot's release notes included, into one commit authored by the person merging,
+and those references would count.
 
 For a repo that deploys, call it from the deploy workflow so a card moves only after the deploy
 succeeded (`needs: deploy`), and add a small `board.yml` for the PR events:
@@ -246,8 +252,8 @@ jobs:
 
 A board job that would do nothing is cheapest when it never starts: a job-level `if:` that is false
 skips the job without a runner. The script only acts on a PR that is opened / reopened / ready for
-review and not a draft, or merged into `dev`, and on a push whose commits mention `#N`. It is a green
-no-op for Dependabot either way, so the `if:` below only saves the billed minute:
+review and not a draft, or merged into `dev`, and on a push whose commits mention `#N`. Dependabot is
+already skipped by `board-sync.yml` itself, so the caller only needs to leave out drafts:
 
 ```yaml
 on:
@@ -255,12 +261,14 @@ on:
     types: [opened, reopened, ready_for_review]   # + closed only where PRs merge into dev
 jobs:
   board:
-    if: github.event.pull_request.user.login != 'dependabot[bot]' && !github.event.pull_request.draft
+    if: ${{ !github.event.pull_request.draft }}
 ```
 
-The reusable workflows stay for existing callers; the logic is kept identical in both
-(`.github/actions/board-sync/sync.sh` is the script of `board-sync.yml`; `tests/board-sync/sync.test.sh`
-runs the same cases against both). `actions-self-test.yml` runs both actions on every change to them.
+The reusable workflows stay for existing callers. The board logic exists once, in
+`.github/actions/board-sync/sync.sh`: `board-sync.yml` checks out that action from its own commit
+(`job.workflow_repository` at `job.workflow_sha`) and runs it, so a caller pinned to a SHA runs
+exactly that code. `tests/board-sync/sync.test.sh` covers the script; `actions-self-test.yml` runs
+both actions and `board-sync.yml` on every change to them.
 
 ## Usage
 

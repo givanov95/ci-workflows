@@ -2,7 +2,7 @@ name: Tests
 
 # Runs the script tests, each with `gh` stubbed, so nothing here touches GitHub:
 #   tests/dependabot-security-merge/decide.test.sh - the "Decide" step of dependabot-security-merge.yml
-#   tests/board-sync/sync.test.sh - the script of board-sync.yml and of .github/actions/board-sync
+#   tests/board-sync/sync.test.sh - .github/actions/board-sync/sync.sh (also what board-sync.yml runs)
 # This is this repo's own CI, not a reusable workflow (no `workflow_call`).
 on:
   pull_request:
