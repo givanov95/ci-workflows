@@ -3,6 +3,18 @@
 set -euo pipefail
 notice() { echo "::notice title=Board sync::$*"; }
 
+# Dependabot runs get only Dependabot secrets (no board key), and its PRs quote upstream release
+# notes, whose "Fixes #N" point at issues of another repository.
+if [ "${ACTOR:-}" = 'dependabot[bot]' ] || [ "${PR_AUTHOR:-}" = 'dependabot[bot]' ]; then
+  notice "Dependabot run - skipping (no cards moved)."
+  exit 0
+fi
+
+if [ -n "${APP_CLIENT_ID:-}" ] && [ "${HAS_APP_KEY:-}" != true ]; then
+  echo "::error title=Board sync::app-client-id is set but the GitHub App private key is missing (pass the BOARD_APP_KEY secret)."
+  exit 1
+fi
+
 if [ -z "${PROJECT_TOKEN:-}" ]; then
   notice "No board token (neither a GitHub App via app-client-id + BOARD_APP_KEY nor PROJECT_TOKEN) - skipping (no cards moved)."
   exit 0
@@ -32,11 +44,16 @@ case "$EVENT_NAME" in
       *) notice "push to $REF_NAME - nothing to do."; exit 0 ;;
     esac
     if [ -z "${BEFORE:-}" ] || [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then
-      TEXT="$(gh api "repos/$REPO/commits/$SHA" --jq '.commit.message')"
+      COMMITS="$(gh api "repos/$REPO/commits/$SHA" --jq '[.]')"
     else
-      TEXT="$(gh api "repos/$REPO/compare/$BEFORE...$SHA" --jq '.commits[].commit.message' 2>/dev/null \
-              || gh api "repos/$REPO/commits/$SHA" --jq '.commit.message')"
+      COMMITS="$(gh api "repos/$REPO/compare/$BEFORE...$SHA" --jq '.commits' 2>/dev/null \
+                 || gh api "repos/$REPO/commits/$SHA" --jq '[.]')"
     fi
+    # Dependabot's commits (incl. the squash commit of its PR) quote upstream release notes - ignored
+    BOT='(.author.login // "") == "dependabot[bot]" or (.commit.author.name // "") == "dependabot[bot]"'
+    SKIPPED="$(echo "$COMMITS" | jq "map(select($BOT)) | length")"
+    [ "$SKIPPED" -eq 0 ] || notice "$SKIPPED Dependabot commit(s) ignored."
+    TEXT="$(echo "$COMMITS" | jq -r ".[] | select(($BOT) | not) | .commit.message")"
     ;;
   *) notice "event $EVENT_NAME is not handled."; exit 0 ;;
 esac

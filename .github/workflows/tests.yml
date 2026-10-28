@@ -1,18 +1,23 @@
 name: Tests
 
-# Runs tests/dependabot-security-merge/decide.test.sh: the "Decide" step of
-# dependabot-security-merge.yml lifted out and run with `gh` stubbed, so nothing here touches
-# GitHub. This is this repo's own CI, not a reusable workflow (no `workflow_call`).
+# Runs the script tests, each with `gh` stubbed, so nothing here touches GitHub:
+#   tests/dependabot-security-merge/decide.test.sh - the "Decide" step of dependabot-security-merge.yml
+#   tests/board-sync/sync.test.sh - the script of board-sync.yml and of .github/actions/board-sync
+# This is this repo's own CI, not a reusable workflow (no `workflow_call`).
 on:
   pull_request:
     paths:
       - .github/workflows/dependabot-security-merge.yml
+      - .github/workflows/board-sync.yml
+      - .github/actions/board-sync/**
       - .github/workflows/tests.yml
       - tests/**
   push:
     branches: [main]
     paths:
       - .github/workflows/dependabot-security-merge.yml
+      - .github/workflows/board-sync.yml
+      - .github/actions/board-sync/**
       - .github/workflows/tests.yml
       - tests/**
 
@@ -36,3 +41,15 @@ jobs:
       # bash, jq and python3 + PyYAML are on ubuntu-latest; the test needs nothing else.
       - name: Run decide.test.sh
         run: bash tests/dependabot-security-merge/decide.test.sh
+
+  board-sync:
+    name: board-sync script
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run sync.test.sh
+        run: bash tests/board-sync/sync.test.sh

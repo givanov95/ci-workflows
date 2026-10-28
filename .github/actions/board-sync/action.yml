@@ -14,6 +14,7 @@ description: >-
 #
 # The job needs `contents: read, issues: read, pull-requests: read`. Events, columns, tokens and
 # the forward-only rule are those of board-sync.yml (see README).
+# Dependabot runs are a green no-op and Dependabot's commits are ignored on push (see board-sync.yml).
 
 inputs:
   project-number:
@@ -41,13 +42,6 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Check the GitHub App configuration
-      if: ${{ inputs.app-client-id != '' && inputs.app-private-key == '' }}
-      shell: bash
-      run: |
-        echo "::error title=Board sync::app-client-id is set but app-private-key is empty (pass the BOARD_APP_KEY secret)."
-        exit 1
-
     - name: Create a GitHub App installation token
       id: app
       if: ${{ inputs.app-client-id != '' && inputs.app-private-key != '' }}
@@ -65,6 +59,10 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         PROJECT_TOKEN: ${{ steps.app.outputs.token || inputs.project-token }}
+        APP_CLIENT_ID: ${{ inputs.app-client-id }}
+        HAS_APP_KEY: ${{ inputs.app-private-key != '' }}
+        ACTOR: ${{ github.actor }}
+        PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         EVENT_NAME: ${{ github.event_name }}
         REPO: ${{ github.repository }}
         REPO_OWNER: ${{ github.repository_owner }}

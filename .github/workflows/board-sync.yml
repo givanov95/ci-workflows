@@ -22,6 +22,11 @@ name: Board sync
 #     see those issues).
 #
 # Without either the workflow does nothing and stays green.
+#
+# Dependabot runs (actor or PR author dependabot[bot]) are a green no-op: they get no board key, and
+# Dependabot PRs quote upstream release notes whose "Fixes #N" are not ours. For the same reason
+# Dependabot's commits are ignored on push.
+#
 # Columns are found by NAME (emoji ignored): In review, Ready to ship (or Ready for Testing),
 # Staging / QA (or Staging), Done.
 
@@ -66,12 +71,6 @@ jobs:
       APP_CLIENT_ID: ${{ inputs.app-client-id }}
       HAS_APP_KEY: ${{ secrets.BOARD_APP_KEY != '' }}
     steps:
-      - name: Check the GitHub App configuration
-        if: ${{ env.APP_CLIENT_ID != '' && env.HAS_APP_KEY != 'true' }}
-        run: |
-          echo "::error title=Board sync::app-client-id is set but the BOARD_APP_KEY secret is missing (pass it with secrets: BOARD_APP_KEY)."
-          exit 1
-
       - name: Create a GitHub App installation token
         id: app
         if: ${{ env.APP_CLIENT_ID != '' && env.HAS_APP_KEY == 'true' }}
@@ -89,6 +88,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PROJECT_TOKEN: ${{ steps.app.outputs.token || secrets.PROJECT_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           EVENT_NAME: ${{ github.event_name }}
           REPO: ${{ github.repository }}
           REPO_OWNER: ${{ github.repository_owner }}
@@ -106,6 +107,18 @@ jobs:
         run: |
           set -euo pipefail
           notice() { echo "::notice title=Board sync::$*"; }
+
+          # Dependabot runs get only Dependabot secrets (no board key), and its PRs quote upstream release
+          # notes, whose "Fixes #N" point at issues of another repository.
+          if [ "${ACTOR:-}" = 'dependabot[bot]' ] || [ "${PR_AUTHOR:-}" = 'dependabot[bot]' ]; then
+            notice "Dependabot run - skipping (no cards moved)."
+            exit 0
+          fi
+
+          if [ -n "${APP_CLIENT_ID:-}" ] && [ "${HAS_APP_KEY:-}" != true ]; then
+            echo "::error title=Board sync::app-client-id is set but the GitHub App private key is missing (pass the BOARD_APP_KEY secret)."
+            exit 1
+          fi
 
           if [ -z "${PROJECT_TOKEN:-}" ]; then
             notice "No board token (neither a GitHub App via app-client-id + BOARD_APP_KEY nor PROJECT_TOKEN) - skipping (no cards moved)."
@@ -136,11 +149,16 @@ jobs:
                 *) notice "push to $REF_NAME - nothing to do."; exit 0 ;;
               esac
               if [ -z "${BEFORE:-}" ] || [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then
-                TEXT="$(gh api "repos/$REPO/commits/$SHA" --jq '.commit.message')"
+                COMMITS="$(gh api "repos/$REPO/commits/$SHA" --jq '[.]')"
               else
-                TEXT="$(gh api "repos/$REPO/compare/$BEFORE...$SHA" --jq '.commits[].commit.message' 2>/dev/null \
-                        || gh api "repos/$REPO/commits/$SHA" --jq '.commit.message')"
+                COMMITS="$(gh api "repos/$REPO/compare/$BEFORE...$SHA" --jq '.commits' 2>/dev/null \
+                           || gh api "repos/$REPO/commits/$SHA" --jq '[.]')"
               fi
+              # Dependabot's commits (incl. the squash commit of its PR) quote upstream release notes - ignored
+              BOT='(.author.login // "") == "dependabot[bot]" or (.commit.author.name // "") == "dependabot[bot]"'
+              SKIPPED="$(echo "$COMMITS" | jq "map(select($BOT)) | length")"
+              [ "$SKIPPED" -eq 0 ] || notice "$SKIPPED Dependabot commit(s) ignored."
+              TEXT="$(echo "$COMMITS" | jq -r ".[] | select(($BOT) | not) | .commit.message")"
               ;;
             *) notice "event $EVENT_NAME is not handled."; exit 0 ;;
           esac
