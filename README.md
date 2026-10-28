@@ -65,8 +65,8 @@ repositories that call this workflow. Pass its **Client ID** as `app-client-id` 
 (PEM) as the secret **`BOARD_APP_KEY`** of each calling repo. The job then mints a 1-hour
 installation token for the board owner with only those three permissions and revokes it at the end
 (`actions/create-github-app-token`, pinned by commit SHA). It takes precedence over `PROJECT_TOKEN`;
-`app-client-id` without the secret fails the job with a clear error. No personal token and no access
-to your other repositories is involved.
+`app-client-id` without the secret fails the job with a clear error (except on a Dependabot run, see
+below). No personal token and no access to your other repositories is involved.
 
 **`PROJECT_TOKEN` (legacy; the only option for a *user-owned* board).** A *classic* personal access
 token with the **`project`** scope
@@ -79,6 +79,12 @@ that call this workflow; only the `Move cards` job reads it.
 
 Columns are found by name (emoji ignored): In review, Ready to ship (or Ready for Testing),
 Staging / QA (or Staging), Done.
+
+**Dependabot.** A run whose actor or PR author is `dependabot[bot]` (including a Dependabot PR merged
+by a human) prints a notice and stays green without moving anything: Dependabot runs get only
+Dependabot secrets, so there is no board key, and Dependabot PRs quote upstream release notes whose
+`Fixes #N` point at another repository. On a push, commits authored by Dependabot (also the squash
+commit of its PR) are ignored for the same reason. Callers need no `if:` for Dependabot.
 
 For a repo that deploys, call it from the deploy workflow so a card moves only after the deploy
 succeeded (`needs: deploy`), and add a small `board.yml` for the PR events:
@@ -240,7 +246,8 @@ jobs:
 
 A board job that would do nothing is cheapest when it never starts: a job-level `if:` that is false
 skips the job without a runner. The script only acts on a PR that is opened / reopened / ready for
-review and not a draft, or merged into `dev`, and on a push whose commits mention `#N`:
+review and not a draft, or merged into `dev`, and on a push whose commits mention `#N`. It is a green
+no-op for Dependabot either way, so the `if:` below only saves the billed minute:
 
 ```yaml
 on:
@@ -252,8 +259,8 @@ jobs:
 ```
 
 The reusable workflows stay for existing callers; the logic is kept identical in both
-(`.github/actions/board-sync/sync.sh` is the script of `board-sync.yml`). `actions-self-test.yml`
-runs both actions on every change to them.
+(`.github/actions/board-sync/sync.sh` is the script of `board-sync.yml`; `tests/board-sync/sync.test.sh`
+runs the same cases against both). `actions-self-test.yml` runs both actions on every change to them.
 
 ## Usage
 

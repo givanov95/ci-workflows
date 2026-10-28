@@ -67,6 +67,7 @@ jobs:
         with:
           project-number: 1
 
+      # A Dependabot run (e.g. a PR that bumps a pin in this file) is a green no-op instead.
       - name: board-sync — an App id without its key (must fail)
         id: nokey
         continue-on-error: true
@@ -84,6 +85,7 @@ jobs:
           HARD_OUTCOME: ${{ steps.hard.outcome }}
           HARD: ${{ steps.hard.outputs.healthy }}
           NOKEY_OUTCOME: ${{ steps.nokey.outcome }}
+          NOKEY_WANT: ${{ (github.actor == 'dependabot[bot]' || github.event.pull_request.user.login == 'dependabot[bot]') && 'success' || 'failure' }}
         run: |
           fail=0
           check() { if [ "$2" = "$3" ]; then echo "ok   $1 = $2"; else echo "FAIL $1 = '$2', expected '$3'"; fail=1; fi; }
@@ -93,5 +95,5 @@ jobs:
           check "soft: step outcome"      "$SOFT_OUTCOME" success
           check "hard: step outcome"      "$HARD_OUTCOME" failure
           check "hard: healthy"           "$HARD" false
-          check "board: App id, no key"   "$NOKEY_OUTCOME" failure
+          check "board: App id, no key"   "$NOKEY_OUTCOME" "$NOKEY_WANT"
           exit "$fail"
