@@ -223,6 +223,7 @@ of a job that runs anyway (the deploy job), so they cost nothing extra:
 |---|---|---|
 | `.github/actions/board-sync` | `board-sync.yml` | `project-number`, `project-owner`, `staging-environment` (`'true'`/`'false'`), `app-client-id`, `app-private-key` (the `BOARD_APP_KEY` secret), `project-token` |
 | `.github/actions/health-check` | `post-deploy-check.yml` | `url`, `expected-status`, `attempts`, `interval`, `initial-delay`, `soft`; output `healthy` |
+| `.github/actions/deploy-release` | – (action only) | `version-url`, `expected-sha`, `branch`, `release`, `github-token`; outputs `sha`, `tag`, `release` |
 
 A deploy job with a baseline, the deploy, the verdict and the cards in one runner:
 
@@ -276,6 +277,73 @@ The reusable workflows stay for existing callers. The board logic exists once, i
 exactly that code. `tests/board-sync/sync.test.sh` covers the script; `actions-self-test.yml` runs
 both actions and `board-sync.yml` on every change to them.
 
+### `deploy-release` — is the site on this commit? Then tag the release
+
+Two steps for the deploy job, right **after** the deploy and its health check and **before** the
+board step (board-sync stays last):
+
+- **Version** reads the site's `version.json` — `{"sha": "<short or full SHA>", "deployed_at": "…"}`,
+  written by the deploy script on the server — and compares it with the commit this run deployed. A
+  **mismatch fails the step**, so the board step after it is skipped and no card goes to Done. A
+  *newer* commit that contains the deployed one passes with a warning (the server pulled the branch
+  head, which a later push had moved): this commit is live, and Release tags the one that is. No
+  answer, no JSON or no valid `sha` fails as well. Runs on every deploy (staging too).
+- **Release** — only when `branch` is `main` and `release` is `'true'`: tag + GitHub release
+  `vYYYY.MM.DD` (date in Europe/Sofia; a second release that day is `.2`, then `.3` …) on the commit
+  the site runs, with the notes of the PRs since the previous release (`--generate-notes`). Nothing
+  is created when a date tag already points at that commit (a re-run); `tag` is then that tag.
+  **A failed release does not fail the action** — a release must not undo a good deploy: it is an
+  error annotation, `release` is `failed` and `tag` empty (`/gws:ship` creates the release when it
+  finds none). That is the old `continue-on-error: true` of the Release step, built in. Do **not**
+  put `continue-on-error` on the action itself: it would hide a version mismatch too.
+
+| Input | Default | Description |
+| --- | --- | --- |
+| `version-url` | – (required) | `version.json` of the environment this run deployed (one per branch when the job deploys staging too). |
+| `expected-sha` | `workflow_run.head_sha` or `github.sha` | Full SHA of the commit this run deployed. |
+| `branch` | `workflow_run.head_branch` or `github.ref_name` | Branch this run deployed; a release is made only for `main`. |
+| `release` | `'true'` | `'false'` only checks the version. |
+| `github-token` | `github.token` | Reads commits and tags, creates the release. |
+
+| Output | |
+| --- | --- |
+| `sha` | Full SHA the site runs (the deployed commit, or a newer one that contains it). |
+| `tag` | Its release tag (new or already there); empty when no release was made or it failed. |
+| `release` | `new`, `existing`, `failed` or `skipped` (not `main`, or `release: 'false'`). |
+
+The defaults cover a deploy started by `push` and by `workflow_run` (which deploys `head_sha` of
+`head_branch`, while `github.sha` / `github.ref_name` are the default branch's). The job needs
+`contents: write` for the tag and the release (`contents: read` is enough with `release: 'false'`)
+and the deploy workflow a `concurrency` group, or two runs can pick the same tag name. The action has
+no checkout and no third-party action (the job holds the deploy key): everything goes through the
+GitHub API. A release made with the job's token does not start other workflows. The runner must
+reach `version-url` like the health check does; if it cannot (basic auth, Cloudflare Access), leave
+the action out and let `/gws:ship` check and tag. The same logic is `plugins/gws/scripts/release.sh`
+in `givanov95/claude-flow` (for deploys that do not run on Actions): change both together.
+`tests/deploy-release/release.test.sh` covers the script.
+
+```yaml
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ci-deploy:
+    runs-on: ubuntu-latest
+    permissions: { contents: write, issues: read, pull-requests: read }   # write: tag + release
+    steps:
+      # ...tests, build, deploy, health check...
+      - name: Version and release
+        uses: givanov95/ci-workflows/.github/actions/deploy-release@<full commit SHA> # vX.Y.Z
+        with:
+          version-url: ${{ (github.event.workflow_run.head_branch || github.ref_name) == 'main' && 'https://example.com/version.json' || 'https://staging.example.com/version.json' }}
+      - uses: givanov95/ci-workflows/.github/actions/board-sync@<full commit SHA> # v1.8.0
+        with:
+          project-number: 1
+          app-client-id: Iv23liy46aBedLh9vZoN
+          app-private-key: ${{ secrets.BOARD_APP_KEY }}
+```
+
 ## Usage
 
 Add a tiny caller workflow to the consuming repo.
@@ -326,7 +394,8 @@ Reference a major tag and it tracks the latest compatible release:
 
 - `@v1` — moving major tag: always the latest 1.x release. Convenient, and fine for the workflows
   that only read (`php-package.yml`, `laravel-app.yml`, `post-deploy-check.yml`). **Not for workflows
-  that receive secrets or a write token** (`board-sync.yml`, `dependabot-security-merge.yml`).
+  that receive secrets or a write token** (`board-sync.yml`, `dependabot-security-merge.yml`, and
+  the actions `board-sync` and `deploy-release`, which run inside the deploy job).
 - `@v1.5.1` — exact release (reproducible). Release tags `v*.*.*` are protected by a ruleset: they
   cannot be moved or deleted. The moving `v1` is not covered by it; it is moved by hand to each new
   release.

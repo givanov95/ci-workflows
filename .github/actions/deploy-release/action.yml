@@ -1,0 +1,82 @@
+name: Deploy release
+description: >-
+  After a deploy, as steps of the deploy job: checks that the site runs the deployed commit (its
+  version.json) and, on main, tags that commit vYYYY.MM.DD[.N] with a GitHub release.
+
+# Right AFTER the deploy and its health check, BEFORE the board step (board-sync stays last):
+#
+#   - name: Version and release
+#     uses: givanov95/ci-workflows/.github/actions/deploy-release@<sha> # vX.Y.Z
+#     with:
+#       version-url: ${{ (github.event.workflow_run.head_branch || github.ref_name) == 'main' && 'https://example.com/version.json' || 'https://staging.example.com/version.json' }}
+#
+#   Version - reads version.json ({"sha": "<short or full SHA>", ...}, written by the deploy script
+#             on the server) and compares it with expected-sha. A mismatch FAILS the step, so the
+#             board step after it is skipped and no card goes to Done. A newer commit that contains
+#             expected-sha passes with a warning (the server pulled the branch head, which a later
+#             push had moved): expected-sha is live, and Release tags the commit that is.
+#   Release - only when `release` is 'true' and `branch` is main: tag + GitHub release vYYYY.MM.DD
+#             (Europe/Sofia; .2, .3 ... for further releases that day) on the commit the site runs,
+#             notes of the PRs since the previous release (--generate-notes). Nothing is created when
+#             a date tag already points at that commit (a re-run). A FAILED RELEASE DOES NOT FAIL THE
+#             ACTION (a release must not undo a good deploy): it is an error annotation, `release` is
+#             'failed' and `tag` empty; /gws:ship creates the release when it finds none. So do not
+#             put `continue-on-error` on this action - that would also hide a version mismatch.
+#
+# The job needs `contents: write` for the tag and the release (`contents: read` with release: 'false').
+# The deploy workflow needs a `concurrency` group (no two deploys of one branch at once), or two runs
+# can pick the same tag name. No checkout and no third-party action: everything goes through the
+# GitHub API with github-token. A release made with the job's token does not start other workflows.
+# The runner must reach version-url (like the health check); if it cannot (basic auth, Cloudflare
+# Access), leave this action out and let /gws:ship check and tag.
+
+inputs:
+  version-url:
+    description: URL of the version.json of the environment this run deployed (one per branch if the job deploys staging too).
+    required: true
+  expected-sha:
+    description: Full SHA of the commit this run deployed. The default covers push and workflow_run (head_sha) triggers.
+    default: ${{ github.event.workflow_run.head_sha || github.sha }}
+  branch:
+    description: Branch this run deployed. A release is made only for main. The default covers push and workflow_run (head_branch).
+    default: ${{ github.event.workflow_run.head_branch || github.ref_name }}
+  release:
+    description: "'true' (default) - tag + release a deploy of main; 'false' - only check the version."
+    default: 'true'
+  github-token:
+    description: Token that reads commits and tags and creates the release (needs contents write for a release).
+    default: ${{ github.token }}
+
+outputs:
+  sha:
+    description: Full SHA of the commit the site runs (expected-sha, or a newer commit that contains it).
+    value: ${{ steps.version.outputs.sha }}
+  tag:
+    description: The release tag of that commit (new or already there); empty when no release was made or it failed.
+    value: ${{ steps.release.outputs.tag }}
+  release:
+    description: "'new', 'existing' (the commit already had a date tag), 'failed' or 'skipped' (not main / release: 'false')."
+    value: ${{ steps.release.outputs.release || 'skipped' }}
+
+runs:
+  using: composite
+  steps:
+    - name: Version
+      id: version
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_REPO: ${{ github.repository }}
+        VERSION_URL: ${{ inputs.version-url }}
+        EXPECTED: ${{ inputs.expected-sha }}
+      run: bash "$GITHUB_ACTION_PATH/release.sh" check
+
+    - name: Release
+      id: release
+      if: ${{ inputs.release == 'true' && inputs.branch == 'main' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_REPO: ${{ github.repository }}
+        SHA: ${{ steps.version.outputs.sha }}
+      run: bash "$GITHUB_ACTION_PATH/release.sh" tag

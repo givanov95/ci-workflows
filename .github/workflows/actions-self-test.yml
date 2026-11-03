@@ -2,7 +2,8 @@ name: Actions self-test
 
 # Runs the composite actions (.github/actions/*) from this checkout, and board-sync.yml, which
 # checks out and runs the board-sync action of its own commit. This is this repo's own CI, not a
-# reusable workflow. The board-sync cases run without a board token, so nothing is moved.
+# reusable workflow. The board-sync cases run without a board token, so nothing is moved; the
+# deploy-release cases only check a version.json served on localhost (release: 'false').
 on:
   pull_request:
     paths:
@@ -79,6 +80,38 @@ jobs:
           project-number: 1
           app-client-id: Iv00000000000000000
 
+      # deploy-release against a local version.json (release: 'false' - this job writes nothing)
+      - name: deploy-release — serve a version.json
+        run: |
+          mkdir -p "$RUNNER_TEMP/site/ok" "$RUNNER_TEMP/site/unknown"
+          printf '{"sha":"%s"}' "${GITHUB_SHA:0:7}" > "$RUNNER_TEMP/site/ok/version.json"
+          printf '{"sha":"%s"}' 0000000 > "$RUNNER_TEMP/site/unknown/version.json"
+          nohup python3 -m http.server 8765 --bind 127.0.0.1 --directory "$RUNNER_TEMP/site" > /dev/null 2>&1 &
+          curl -fsS --retry 10 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:8765/ok/version.json
+
+      - name: deploy-release — the site runs this commit
+        id: version_ok
+        uses: ./.github/actions/deploy-release
+        with:
+          version-url: http://127.0.0.1:8765/ok/version.json
+          release: 'false'
+
+      - name: deploy-release — the site runs an unknown commit (must fail)
+        id: version_unknown
+        continue-on-error: true
+        uses: ./.github/actions/deploy-release
+        with:
+          version-url: http://127.0.0.1:8765/unknown/version.json
+          release: 'false'
+
+      - name: deploy-release — no version.json (must fail)
+        id: version_missing
+        continue-on-error: true
+        uses: ./.github/actions/deploy-release
+        with:
+          version-url: http://127.0.0.1:8765/missing/version.json
+          release: 'false'
+
       - name: Check the outcomes
         env:
           OK: ${{ steps.ok.outputs.healthy }}
@@ -88,6 +121,11 @@ jobs:
           HARD_OUTCOME: ${{ steps.hard.outcome }}
           HARD: ${{ steps.hard.outputs.healthy }}
           NOKEY_OUTCOME: ${{ steps.nokey.outcome }}
+          VERSION_SHA: ${{ steps.version_ok.outputs.sha }}
+          VERSION_RELEASE: ${{ steps.version_ok.outputs.release }}
+          VERSION_TAG: ${{ steps.version_ok.outputs.tag }}
+          UNKNOWN_OUTCOME: ${{ steps.version_unknown.outcome }}
+          MISSING_OUTCOME: ${{ steps.version_missing.outcome }}
           NOKEY_WANT: ${{ (github.actor == 'dependabot[bot]' || github.event.pull_request.user.login == 'dependabot[bot]') && 'success' || 'failure' }}
         run: |
           fail=0
@@ -99,6 +137,11 @@ jobs:
           check "hard: step outcome"      "$HARD_OUTCOME" failure
           check "hard: healthy"           "$HARD" false
           check "board: App id, no key"   "$NOKEY_OUTCOME" "$NOKEY_WANT"
+          check "release: sha"            "$VERSION_SHA" "$GITHUB_SHA"
+          check "release: skipped"        "$VERSION_RELEASE" skipped
+          check "release: no tag"         "$VERSION_TAG" ''
+          check "release: unknown commit" "$UNKNOWN_OUTCOME" failure
+          check "release: no version"     "$MISSING_OUTCOME" failure
           exit "$fail"
 
   # board-sync.yml checks out the action from its own commit (job.workflow_sha) and runs it. Without
