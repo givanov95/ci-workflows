@@ -17,7 +17,7 @@ on:
       node-version:
         description: Node version used for the asset build.
         type: string
-        default: '20'
+        default: '26'
       build:
         description: Run the Vite build (npm ci + npm run build).
         type: boolean
