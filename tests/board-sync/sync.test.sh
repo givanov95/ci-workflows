@@ -204,6 +204,10 @@ expect 'add: App, repo of another owner -> by hand'      0 - "${app[@]}" PROJECT
 expect 'add: App, repo of another owner, a PAT -> tries' 0 - "${app[@]}" PROJECT_OWNER=gwebsolutions-dev \
     CALLED='-f o=gwebsolutions-dev'
 expect 'add: App, owner in another letter case'          0 - "${app[@]}" PROJECT_OWNER=O CALLED=addProjectV2ItemById
+expect 'add: owner case ignored when there is no token'  0 - "${app[@]}" PROJECT_OWNER=O PROJECT_TOKEN= HAS_APP_KEY=false NO_GH=1 \
+    NOTICE='No GitHub App private key'
+expect 'add: "#12"'                                      0 - "${app[@]}" ISSUE='#12' CALLED='-f c=NODE_12'
+expect 'add: the URL gh issue create prints, a newline'  0 - "${app[@]}" ISSUE=$'https://github.com/o/r/issues/12\n' CALLED='-f c=NODE_12'
 expect 'add: PAT, repo of another owner -> tries'        0 - "${app[@]}" APP_CLIENT_ID= HAS_APP_KEY=false \
     PROJECT_OWNER=gwebsolutions-dev CALLED='-f o=gwebsolutions-dev'
 expect 'add: a pull request number fails'                1 - "${app[@]}" FIXTURE_PR_NUMBERS=12 NOT_CALLED=addProjectV2ItemById \

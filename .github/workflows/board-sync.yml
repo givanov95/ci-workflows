@@ -84,8 +84,9 @@ permissions:
 jobs:
   sync:
     name: Move cards
-    # Dependabot runs never move cards (see above), so skip them without starting a runner.
-    if: ${{ github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' }}
+    # Dependabot runs never move cards (see above), so skip them without starting a runner - in the
+    # event mode only: add mode puts the given issue on the board on any run.
+    if: ${{ inputs.issue != '' || github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

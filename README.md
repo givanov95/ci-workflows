@@ -54,7 +54,7 @@ out-of-order events are harmless.
 | `project-owner` | repository owner | User or organization that owns the board. |
 | `staging-environment` | `false` | `true` only if a push to `staging` really deploys a staging environment. |
 | `app-client-id` | empty | Client ID of the GitHub App that moves the cards (see below). Empty = use `PROJECT_TOKEN`. |
-| `issue` | empty | **Add mode** (see below): an issue number of this repository to put on the board. Empty = the event mode above. |
+| `issue` | empty | **Add mode** (see below): an issue number of this repository to put on the board (`12`, `#12` or the issue URL). Empty = the event mode above. |
 | `column` | empty | Add mode: column to move the card to, forward only (e.g. `New`, `Ready`). Empty = leave it to the board. |
 | `priority` | empty | Add mode: option of the board's `Priority` field (e.g. `P2`), set only when the card has none. |
 
@@ -86,7 +86,7 @@ Staging / QA (or Staging), Done.
 **Dependabot.** A run whose actor or PR author is `dependabot[bot]` (including a Dependabot PR merged
 by a human) moves nothing: Dependabot runs get only Dependabot secrets, so there is no board key, and
 Dependabot PRs quote upstream release notes whose `Fixes #N` point at another repository.
-`board-sync.yml` skips such a run at job level, without a runner; the composite action prints a
+`board-sync.yml` skips such a run at job level, without a runner (not in add mode, see below); the composite action prints a
 notice and stays green. Commits authored by Dependabot (also the squash commit of its PR) are ignored
 on a push and in the commits of a PR for the same reason. Callers need no `if:` for Dependabot.
 On a Dependabot run the job of `board-sync.yml` is therefore *skipped*, not *success*: a caller job

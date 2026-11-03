@@ -22,6 +22,8 @@ rank() { # normalized column name -> flow rank (-1 = unknown)
 
 if [ -n "$ISSUE" ]; then
   # ---- add mode: check the inputs first, so a wrong one fails in every repo, key or not ----
+  # also takes "#12", the URL `gh issue create` prints and a stray space / newline of a step output
+  ISSUE="$(printf '%s' "$ISSUE" | tr -d '[:space:]')"; ISSUE="${ISSUE##*/issues/}"; ISSUE="${ISSUE#\#}"
   [[ "$ISSUE" =~ ^[1-9][0-9]*$ ]] || { echo "::error title=Board sync::issue must be an issue number, not '$ISSUE'."; exit 1; }
   TARGET="$(printf '%s' "${COLUMN:-}" | norm)"
   if [ -n "${COLUMN:-}" ] && [ "$(rank "$TARGET")" -lt 0 ]; then
@@ -57,16 +59,16 @@ else
     notice "Dependabot run - skipping (no cards moved)."
     exit 0
   fi
-fi
 
-if [ -z "$ISSUE" ] && [ -n "${APP_CLIENT_ID:-}" ] && [ "${HAS_APP_KEY:-}" != true ]; then
-  echo "::error title=Board sync::app-client-id is set but the GitHub App private key is missing (board-sync.yml: pass it with secrets: BOARD_APP_KEY; the action: app-private-key)."
-  exit 1
-fi
+  if [ -n "${APP_CLIENT_ID:-}" ] && [ "${HAS_APP_KEY:-}" != true ]; then
+    echo "::error title=Board sync::app-client-id is set but the GitHub App private key is missing (board-sync.yml: pass it with secrets: BOARD_APP_KEY; the action: app-private-key)."
+    exit 1
+  fi
 
-if [ -z "${PROJECT_TOKEN:-}" ]; then
-  notice "No board token (neither a GitHub App via app-client-id + BOARD_APP_KEY nor PROJECT_TOKEN) - skipping (no cards moved)."
-  exit 0
+  if [ -z "${PROJECT_TOKEN:-}" ]; then
+    notice "No board token (neither a GitHub App via app-client-id + BOARD_APP_KEY nor PROJECT_TOKEN) - skipping (no cards moved)."
+    exit 0
+  fi
 fi
 
 # ---- 1. what happened -> target column + the text to search for issue refs ----
