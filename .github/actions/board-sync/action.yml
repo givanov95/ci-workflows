@@ -31,7 +31,8 @@ description: >-
 # The event is ignored. Adding is idempotent (a card already on the board keeps its column);
 # `column` moves the card forward only, `priority` is set only on a card that has none. No board
 # key, or an App whose board owner is not the repository owner (its token cannot see the issue),
-# is a notice to add the card by hand, not a failure. Needs `issues: read` (github-token).
+# is a notice to add the card by hand, not a failure (a project-token PAT is tried instead, if given).
+# Dependabot runs are not skipped in add mode. Needs `issues: read` (github-token).
 
 inputs:
   project-number:
@@ -70,9 +71,10 @@ runs:
   steps:
     - name: Create a GitHub App installation token
       id: app
-      # not on a Dependabot run: the script skips it anyway (a stale Dependabot secret must not fail it);
-      # in add mode not for a repository of another owner either (the token could not see the issue)
-      if: ${{ inputs.app-client-id != '' && inputs.app-private-key != '' && github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' && (inputs.issue == '' || github.repository_owner == (inputs.project-owner || github.repository_owner)) }}
+      # event mode: not on a Dependabot run (the script skips it anyway; a stale Dependabot secret must
+      # not fail it). Add mode: not for a repository of another owner than the board's (the token
+      # could not see the issue; a project-token is used instead, if given).
+      if: ${{ inputs.app-client-id != '' && inputs.app-private-key != '' && (inputs.issue == '' && github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' || inputs.issue != '' && github.repository_owner == (inputs.project-owner || github.repository_owner)) }}
       uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
       with:
         client-id: ${{ inputs.app-client-id }}

@@ -137,7 +137,8 @@ security audit) passes its number as `issue`: the event is then ignored, and the
 board with the same token setup. The add is idempotent — an issue that is already there keeps its
 card and column, so a weekly re-run is harmless; a new card gets New from the board's own "Item
 added" workflow. `column` moves the card **forward only** (like every other move; after the add it
-waits for that "Item added" workflow first), and `priority` is set only on a card that has none, so
+waits 8 s for that "Item added" workflow first — a board workflow slower than that can still put a
+new card back in New), and `priority` is set only on a card that has none, so
 a re-run never undoes a human's decision. Columns and priorities are found by name, emoji ignored; a
 column outside the flow or a priority the board does not have fails before anything is added, as
 do a number that is not an issue of this repository, a missing board and a failed add.
@@ -147,8 +148,9 @@ prints a notice to add the card by hand (`board.sh add <N>`) and stays green: no
 `app-client-id` without its key (e.g. a repo without the `BOARD_APP_KEY` secret), and a GitHub App
 whose board owner (`project-owner`) is not the repository's owner — the installation token is minted
 for the board owner and cannot see an issue of a personal repository, so the token is not even
-minted. A `PROJECT_TOKEN` (classic PAT with `repo`) does try such an issue. The job needs
-`issues: read` (the node id of the issue is read with `github-token`).
+minted. A `PROJECT_TOKEN` (classic PAT with `repo`) does try such an issue. The Dependabot skip
+of the event mode does not apply: an explicitly given issue is added on any run that has a token.
+The job needs `issues: read` (the node id of the issue is read with `github-token`).
 
 ```yaml
 # a step of the job that opened the issue (the action; board-sync.yml takes the same inputs)

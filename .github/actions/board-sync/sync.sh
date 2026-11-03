@@ -11,32 +11,55 @@ set -euo pipefail
 notice() { echo "::notice title=Board sync::$*"; }
 ISSUE="${ISSUE:-}"
 OWNER="${PROJECT_OWNER:-$REPO_OWNER}"
+norm() { tr '[:upper:]' '[:lower:]' | sed -E 's/[^[:alnum:] ]+/ /g; s/ +/ /g; s/^ //; s/ $//'; }
+rank() { # normalized column name -> flow rank (-1 = unknown)
+  case "$1" in
+    new) echo 0;; backlog) echo 1;; ready|planned) echo 2;; "in progress") echo 3;;
+    "in review") echo 4;; "ready to ship"|"ready for testing") echo 5;;
+    staging|"staging qa") echo 6;; done) echo 7;; *) echo -1;;
+  esac
+}
 
-# Dependabot runs get only Dependabot secrets (no board key), and its PRs quote upstream release
-# notes, whose "Fixes #N" point at issues of another repository.
-if [ "${ACTOR:-}" = 'dependabot[bot]' ] || [ "${PR_AUTHOR:-}" = 'dependabot[bot]' ]; then
-  notice "Dependabot run - skipping (no cards moved)."
-  exit 0
-fi
-
-# Add mode is a side task of a job that has done its work (e.g. opened an issue), so a missing
-# board key is a notice to add the card by hand, not a failure. An installation token of the App is
-# minted for the board owner and cannot see an issue of another owner's repository (a personal repo
-# on an organization board), so that, too, is left to a human.
 if [ -n "$ISSUE" ]; then
+  # ---- add mode: check the inputs first, so a wrong one fails in every repo, key or not ----
   [[ "$ISSUE" =~ ^[1-9][0-9]*$ ]] || { echo "::error title=Board sync::issue must be an issue number, not '$ISSUE'."; exit 1; }
-  BY_HAND="put issue #$ISSUE on the board $OWNER #$PROJECT_NUMBER by hand if it is not there (board.sh add $ISSUE)"
-  if [ -n "${APP_CLIENT_ID:-}" ]; then
-    if [ "$(printf '%s' "$REPO_OWNER" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')" ]; then
-      notice "$REPO is not a repository of $OWNER, so the GitHub App cannot see its issues - $BY_HAND."; exit 0
+  TARGET="$(printf '%s' "${COLUMN:-}" | norm)"
+  if [ -n "${COLUMN:-}" ] && [ "$(rank "$TARGET")" -lt 0 ]; then
+    echo "::error title=Board sync::column '${COLUMN:-}' is not a column of the flow (New, Backlog, Ready, In progress, In review, Ready to ship, Staging / QA, Done)."
+    exit 1
+  fi
+  PRIORITY_NAME="$(printf '%s' "${PRIORITY:-}" | norm)"
+  if [ -n "${PRIORITY:-}" ] && [ -z "$PRIORITY_NAME" ]; then
+    echo "::error title=Board sync::priority '${PRIORITY:-}' has no letters or digits (options are found by name, emoji ignored)."
+    exit 1
+  fi
+  # Add mode is a side task of a job that has done its work (e.g. opened an issue), so no token is a
+  # notice to add the card by hand, not a failure. It runs on a Dependabot-triggered run too (the
+  # skip below is about Dependabot's "Fixes #N"); there it usually has no key, hence the notice.
+  # The App token is not minted for a repository of another owner than the board's (it could not
+  # see the issue); a PROJECT_TOKEN (PAT), if given, is then used instead.
+  if [ -z "${PROJECT_TOKEN:-}" ]; then
+    BY_HAND="put issue #$ISSUE on the board $OWNER #$PROJECT_NUMBER by hand if it is not there (board.sh add $ISSUE)"
+    if [ -n "${APP_CLIENT_ID:-}" ] \
+       && [ "$(printf '%s' "$REPO_OWNER" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')" ]; then
+      notice "$REPO is not a repository of $OWNER, so the GitHub App cannot see its issues - $BY_HAND."
+    elif [ -n "${APP_CLIENT_ID:-}" ] && [ "${HAS_APP_KEY:-}" != true ]; then
+      notice "No GitHub App private key (BOARD_APP_KEY) - $BY_HAND."
+    else
+      notice "No board token - $BY_HAND."
     fi
-    if [ "${HAS_APP_KEY:-}" != true ]; then notice "No GitHub App private key (BOARD_APP_KEY) - $BY_HAND."; exit 0; fi
-  elif [ -z "${PROJECT_TOKEN:-}" ]; then
-    notice "No board token - $BY_HAND."; exit 0
+    exit 0
+  fi
+else
+  # Dependabot runs get only Dependabot secrets (no board key), and its PRs quote upstream release
+  # notes, whose "Fixes #N" point at issues of another repository.
+  if [ "${ACTOR:-}" = 'dependabot[bot]' ] || [ "${PR_AUTHOR:-}" = 'dependabot[bot]' ]; then
+    notice "Dependabot run - skipping (no cards moved)."
+    exit 0
   fi
 fi
 
-if [ -n "${APP_CLIENT_ID:-}" ] && [ "${HAS_APP_KEY:-}" != true ]; then
+if [ -z "$ISSUE" ] && [ -n "${APP_CLIENT_ID:-}" ] && [ "${HAS_APP_KEY:-}" != true ]; then
   echo "::error title=Board sync::app-client-id is set but the GitHub App private key is missing (board-sync.yml: pass it with secrets: BOARD_APP_KEY; the action: app-private-key)."
   exit 1
 fi
@@ -47,14 +70,6 @@ if [ -z "${PROJECT_TOKEN:-}" ]; then
 fi
 
 # ---- 1. what happened -> target column + the text to search for issue refs ----
-norm() { tr '[:upper:]' '[:lower:]' | sed -E 's/[^[:alnum:] ]+/ /g; s/ +/ /g; s/^ //; s/ $//'; }
-rank() { # normalized column name -> flow rank (-1 = unknown)
-  case "$1" in
-    new) echo 0;; backlog) echo 1;; ready|planned) echo 2;; "in progress") echo 3;;
-    "in review") echo 4;; "ready to ship"|"ready for testing") echo 5;;
-    staging|"staging qa") echo 6;; done) echo 7;; *) echo -1;;
-  esac
-}
 TEXT=""
 # Commits by Dependabot (incl. the squash commit of its PR, also inside a later dev -> main PR or
 # push) quote upstream release notes, so they are left out.
@@ -66,14 +81,8 @@ add_commits() { # $1: JSON array of commits -> their messages, without Dependabo
   [ "$skipped" -eq 0 ] || notice "$skipped Dependabot commit(s) ignored."
   TEXT="$TEXT"$'\n'"$(echo "$commits" | jq -r ".[] | select(($BOT) | not) | .commit.message")"
 }
-if [ -n "$ISSUE" ]; then # add mode: the issue asked for, the column / priority asked for
+if [ -n "$ISSUE" ]; then # add mode: the issue, column and priority checked above
   ISSUES="$ISSUE"
-  TARGET="$(printf '%s' "${COLUMN:-}" | norm)"
-  if [ -n "$TARGET" ] && [ "$(rank "$TARGET")" -lt 0 ]; then
-    echo "::error title=Board sync::column '${COLUMN:-}' is not a column of the flow (New, Backlog, Ready, In progress, In review, Ready to ship, Staging / QA, Done)."
-    exit 1
-  fi
-  PRIORITY_NAME="$(printf '%s' "${PRIORITY:-}" | norm)"
 else # event mode
 case "$EVENT_NAME" in
   pull_request)
@@ -124,16 +133,17 @@ PROJECT_ID="$(echo "$BOARD" | jq -r '.data.repositoryOwner.projectV2.id // empty
 FIELD_ID="$(echo "$BOARD" | jq -r '.data.repositoryOwner.projectV2.field.id // empty')"
 [ -n "$PROJECT_ID" ] && [ -n "$FIELD_ID" ] || { echo "::error::Project #$PROJECT_NUMBER of $OWNER or its Status field was not found (check the GitHub App installation / PROJECT_TOKEN and the project number)."; exit 1; }
 
-OPTION_ID=""
+# By name; an exact name wins, else another name of the same column (Ready to ship / Ready for
+# Testing, Staging / QA / Staging, Ready / Planned) - either way round.
+TARGET_RANK="$(rank "$TARGET")"
+OPTION_ID=""; ALIAS_ID=""
 [ -z "$TARGET" ] || while IFS=$'\t' read -r id name; do
   n="$(printf '%s' "$name" | norm)"
-  if [ "$n" = "$TARGET" ] || { [ "$TARGET" = "ready to ship" ] && [ "$n" = "ready for testing" ]; } \
-     || { [ "$TARGET" = staging ] && { [ "$n" = "staging qa" ] || [ "$n" = staging ]; }; }; then
-    OPTION_ID="$id"; break
-  fi
+  if [ "$n" = "$TARGET" ]; then OPTION_ID="$id"; break; fi
+  if [ -z "$ALIAS_ID" ] && [ "$TARGET_RANK" -ge 0 ] && [ "$(rank "$n")" = "$TARGET_RANK" ]; then ALIAS_ID="$id"; fi
 done < <(echo "$BOARD" | jq -r '.data.repositoryOwner.projectV2.field.options[]|[.id,.name]|@tsv')
+OPTION_ID="${OPTION_ID:-$ALIAS_ID}"
 [ -z "$TARGET" ] || [ -n "$OPTION_ID" ] || { echo "::error::No '$TARGET' column on the board."; exit 1; }
-TARGET_RANK="$(rank "$TARGET")"
 
 # add mode with a priority: the board's Priority field and the option (by name, emoji ignored)
 PRI_FIELD_ID=""; PRI_OPTION_ID=""
@@ -173,13 +183,15 @@ for N in $ISSUES; do
 
   if [ -n "$PRI_OPTION_ID" ]; then
     # only a card without a priority gets one: a re-run must not undo a human's decision
-    CUR_PRI="$(gql -f i="$ITEM_ID" -f query='query($i:ID!){node(id:$i){... on ProjectV2Item{priority:fieldValueByName(name:"Priority"){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}' \
-               | jq -r '.data.node.priority.name // ""')"
+    PRI_NOW="$(gql -f i="$ITEM_ID" -f query='query($i:ID!){node(id:$i){... on ProjectV2Item{priority:fieldValueByName(name:"Priority"){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}')" \
+      || { echo "::error::Could not read the priority of the card of #$N."; RC=1; continue; }
+    CUR_PRI="$(echo "$PRI_NOW" | jq -r '.data.node.priority.name // ""')"
     if [ -n "$CUR_PRI" ]; then
       notice "#$N keeps its priority '$CUR_PRI'."
     else
       gql -f p="$PROJECT_ID" -f i="$ITEM_ID" -f f="$PRI_FIELD_ID" -f o="$PRI_OPTION_ID" -f query='
-        mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){projectV2Item{id}}}' >/dev/null
+        mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){projectV2Item{id}}}' >/dev/null \
+        || { echo "::error::Could not set the priority of the card of #$N (the token needs Projects: write)."; RC=1; continue; }
       echo "#$N: priority '${PRIORITY:-}'"
     fi
   fi

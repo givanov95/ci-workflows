@@ -40,6 +40,7 @@ case "$path" in
     graphql)
         case "$query" in
             *updateProjectV2ItemFieldValue*)
+                [ "$field" != PF ] || [ -z "${FIXTURE_PRI_FAIL:-}" ] || { echo "gh: Resource not accessible by integration" >&2; exit 1; }
                 if [ "$field" = PF ]; then echo "priority ${item#ITEM_NODE_} $option" >> "$CALLS"; else echo "moved ${item#ITEM_NODE_}" >> "$CALLS"; fi
                 echo '{}' ;;
             *addProjectV2ItemById*)
@@ -196,8 +197,12 @@ expect 'add: an unknown priority fails before the add'   1 - "${app[@]}" PRIORIT
     NOTICE="No priority 'P9'"
 expect 'add: no token -> add it by hand'                 0 - "${app[@]}" APP_CLIENT_ID= PROJECT_TOKEN= NO_GH=1 NOTICE='board.sh add 12'
 expect 'add: App id without key -> add it by hand'       0 - "${app[@]}" HAS_APP_KEY=false PROJECT_TOKEN= NO_GH=1 NOTICE='board.sh add 12'
-expect 'add: App, repo of another owner -> by hand'      0 - "${app[@]}" PROJECT_OWNER=gwebsolutions-dev NO_GH=1 \
+# the action does not mint the App token for a repo of another owner: PROJECT_TOKEN is then empty,
+# or the PAT given as project-token
+expect 'add: App, repo of another owner -> by hand'      0 - "${app[@]}" PROJECT_OWNER=gwebsolutions-dev PROJECT_TOKEN= NO_GH=1 \
     NOTICE='cannot see its issues'
+expect 'add: App, repo of another owner, a PAT -> tries' 0 - "${app[@]}" PROJECT_OWNER=gwebsolutions-dev \
+    CALLED='-f o=gwebsolutions-dev'
 expect 'add: App, owner in another letter case'          0 - "${app[@]}" PROJECT_OWNER=O CALLED=addProjectV2ItemById
 expect 'add: PAT, repo of another owner -> tries'        0 - "${app[@]}" APP_CLIENT_ID= HAS_APP_KEY=false \
     PROJECT_OWNER=gwebsolutions-dev CALLED='-f o=gwebsolutions-dev'
@@ -206,7 +211,17 @@ expect 'add: a pull request number fails'                1 - "${app[@]}" FIXTURE
 expect 'add: the board is not found'                     1 - "${app[@]}" FIXTURE_NO_BOARD=1 NOT_CALLED=addProjectV2ItemById
 expect 'add: the add fails'                              1 - "${app[@]}" FIXTURE_ADD_FAIL=1 NOTICE='Could not add the card of #12'
 expect 'add: not a number'                               1 - "${app[@]}" ISSUE='12; x' NO_GH=1
-expect 'add: Dependabot run'                             0 - "${app[@]}" ACTOR='dependabot[bot]' NO_GH=1 NOTICE='Dependabot run'
+expect 'add: a Dependabot-triggered run still adds'      0 - "${app[@]}" ACTOR='dependabot[bot]' CALLED=addProjectV2ItemById
+expect 'add: a Dependabot run without a key -> by hand'  0 - "${app[@]}" ACTOR='dependabot[bot]' HAS_APP_KEY=false PROJECT_TOKEN= \
+    NO_GH=1 NOTICE='board.sh add 12'
+expect 'add: a wrong column fails without a key too'     1 - "${app[@]}" COLUMN=Blocked PROJECT_TOKEN= HAS_APP_KEY=false NO_GH=1
+expect 'add: an emoji-only priority fails'               1 - "${app[@]}" PRIORITY='🔥' NO_GH=1 NOTICE='has no letters or digits'
+expect 'add: an emoji-only column fails'                 1 - "${app[@]}" COLUMN='🔥' NO_GH=1 NOTICE='is not a column of the flow'
+expect 'add: column by another name (Ready for testing)' 0 12 "${app[@]}" COLUMN='Ready for testing'
+expect 'add: column by another name (Planned)'           0 12 "${app[@]}" COLUMN=Planned FIXTURE_ADD_STATUS='🆕 New' \
+    CALLED='-f o=o6'
+expect 'add: setting the priority fails'                 1 - "${app[@]}" PRIORITY=P2 FIXTURE_PRI_FAIL=1 \
+    NOTICE='Could not set the priority of the card of #12'
 expect 'add: a PR event does not move PR references'     0 - "${app[@]}" EVENT_NAME=pull_request PR_ACTION=opened PR_DRAFT=false \
     PR_BASE=main NOT_CALLED='pulls/'
 
