@@ -54,6 +54,9 @@ out-of-order events are harmless.
 | `project-owner` | repository owner | User or organization that owns the board. |
 | `staging-environment` | `false` | `true` only if a push to `staging` really deploys a staging environment. |
 | `app-client-id` | empty | Client ID of the GitHub App that moves the cards (see below). Empty = use `PROJECT_TOKEN`. |
+| `issue` | empty | **Add mode** (see below): an issue number of this repository to put on the board (`12`, `#12` or the issue URL). Empty = the event mode above. |
+| `column` | empty | Add mode: column to move the card to, forward only (e.g. `New`, `Ready`). Empty = leave it to the board. |
+| `priority` | empty | Add mode: option of the board's `Priority` field (e.g. `P2`), set only when the card has none. |
 
 The default `GITHUB_TOKEN` cannot reach a Project board, so the job needs one of two tokens. Without
 either, the workflow prints a notice and stays green.
@@ -83,7 +86,7 @@ Staging / QA (or Staging), Done.
 **Dependabot.** A run whose actor or PR author is `dependabot[bot]` (including a Dependabot PR merged
 by a human) moves nothing: Dependabot runs get only Dependabot secrets, so there is no board key, and
 Dependabot PRs quote upstream release notes whose `Fixes #N` point at another repository.
-`board-sync.yml` skips such a run at job level, without a runner; the composite action prints a
+`board-sync.yml` skips such a run at job level, without a runner (not in add mode, see below); the composite action prints a
 notice and stays green. Commits authored by Dependabot (also the squash commit of its PR) are ignored
 on a push and in the commits of a PR for the same reason. Callers need no `if:` for Dependabot.
 On a Dependabot run the job of `board-sync.yml` is therefore *skipped*, not *success*: a caller job
@@ -127,6 +130,42 @@ jobs:
 
 A repo with no deploy (a package) can skip the deploy workflow and add `push: branches: [main]` to
 `board.yml` instead.
+
+**Add mode — put an issue on the board.** `gh issue create` (or `GITHUB_TOKEN`) never adds an issue
+to a board, and the board has no "Auto-add to project". A job that opens an issue (e.g. a scheduled
+security audit) passes its number as `issue`: the event is then ignored, and the issue goes on the
+board with the same token setup. The add is idempotent — an issue that is already there keeps its
+card and column, so a weekly re-run is harmless; a new card gets New from the board's own "Item
+added" workflow. `column` moves the card **forward only** (like every other move; after the add it
+waits 8 s for that "Item added" workflow first — a board workflow slower than that can still put a
+new card back in New), and `priority` is set only on a card that has none, so
+a re-run never undoes a human's decision. Columns and priorities are found by name, emoji ignored; a
+column outside the flow or a priority the board does not have fails before anything is added, as
+do a number that is not an issue of this repository, a missing board and a failed add.
+
+Add mode is a side task of a job that has done its work, so where the event mode fails, it only
+prints a notice to add the card by hand (`board.sh add <N>`) and stays green: no token at all, an
+`app-client-id` without its key (e.g. a repo without the `BOARD_APP_KEY` secret), and a GitHub App
+whose board owner (`project-owner`) is not the repository's owner — the installation token is minted
+for the board owner and cannot see an issue of a personal repository, so the token is not even
+minted. A `PROJECT_TOKEN` (classic PAT with `repo`) does try such an issue. The Dependabot skip
+of the event mode does not apply: an explicitly given issue is added on any run that has a token.
+The job needs `issues: read` (the node id of the issue is read with `github-token`).
+
+```yaml
+# a step of the job that opened the issue (the action; board-sync.yml takes the same inputs)
+      - name: Board
+        if: steps.audit.outputs.issue != ''
+        uses: givanov95/ci-workflows/.github/actions/board-sync@<full commit SHA> # vX.Y.Z
+        with:
+          project-owner: gwebsolutions-dev
+          project-number: 1
+          issue: ${{ steps.audit.outputs.issue }}
+          app-client-id: Iv23xxxxxxxxxxxxxxxx
+          app-private-key: ${{ secrets.BOARD_APP_KEY }}   # empty in a repo without it: a notice
+          # column: Ready
+          # priority: P1
+```
 
 ### `post-deploy-check.yml` — health gate after a deploy
 
@@ -221,7 +260,7 @@ of a job that runs anyway (the deploy job), so they cost nothing extra:
 
 | Action | Same as | Inputs |
 |---|---|---|
-| `.github/actions/board-sync` | `board-sync.yml` | `project-number`, `project-owner`, `staging-environment` (`'true'`/`'false'`), `app-client-id`, `app-private-key` (the `BOARD_APP_KEY` secret), `project-token` |
+| `.github/actions/board-sync` | `board-sync.yml` | `project-number`, `project-owner`, `staging-environment` (`'true'`/`'false'`), `app-client-id`, `app-private-key` (the `BOARD_APP_KEY` secret), `project-token`; add mode: `issue`, `column`, `priority` |
 | `.github/actions/health-check` | `post-deploy-check.yml` | `url`, `expected-status`, `attempts`, `interval`, `initial-delay`, `soft`; output `healthy` |
 | `.github/actions/deploy-release` | – (action only) | `version-url`, `expected-sha`, `branch`, `release`, `github-token`; outputs `sha`, `tag`, `release` |
 

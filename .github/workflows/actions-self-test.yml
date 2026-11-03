@@ -71,6 +71,22 @@ jobs:
         with:
           project-number: 1
 
+      # add mode is a side task: no key, or no token at all, is a notice (green), never a failure
+      - name: board-sync — add mode without a token is a green no-op
+        uses: ./.github/actions/board-sync
+        with:
+          project-number: 1
+          issue: 1
+          column: New
+          priority: P2
+
+      - name: board-sync — add mode, an App id without its key is a green no-op
+        uses: ./.github/actions/board-sync
+        with:
+          project-number: 1
+          issue: 1
+          app-client-id: Iv00000000000000000
+
       # A Dependabot run (e.g. a PR that bumps a pin in this file) is a green no-op instead.
       - name: board-sync — an App id without its key (must fail)
         id: nokey
@@ -155,3 +171,17 @@ jobs:
     uses: ./.github/workflows/board-sync.yml
     with:
       project-number: 1
+
+  # The add-mode inputs reach the action through board-sync.yml (no token: a green no-op).
+  board-sync-workflow-add:
+    name: board-sync.yml (add mode)
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    uses: ./.github/workflows/board-sync.yml
+    with:
+      project-number: 1
+      issue: '1'
+      column: New
+      priority: P2
