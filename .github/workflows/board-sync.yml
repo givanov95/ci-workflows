@@ -32,6 +32,10 @@ name: Board sync
 #
 # Columns are found by NAME (emoji ignored): In review, Ready to ship (or Ready for Testing),
 # Staging / QA (or Staging), Done.
+#
+# Add mode (`issue`): instead of the above, puts that issue of the calling repository on the board
+# (idempotent), optionally moves it forward to `column` and sets `priority` when it has none. No
+# board key, or an App board of another owner than the repository's, is a notice, not a failure.
 
 on:
   workflow_call:
@@ -50,6 +54,18 @@ on:
         default: false
       app-client-id:
         description: Client ID of the GitHub App that moves the cards (needs the BOARD_APP_KEY secret). Leave empty to use PROJECT_TOKEN.
+        type: string
+        default: ''
+      issue:
+        description: Add mode - number of an issue of the calling repository to put on the board. Empty = event mode.
+        type: string
+        default: ''
+      column:
+        description: Add mode - column to move the card to, forward only (e.g. New, Ready). Empty = leave it to the board.
+        type: string
+        default: ''
+      priority:
+        description: Add mode - option of the board's Priority field (e.g. P1), set only when the card has none.
         type: string
         default: ''
     secrets:
@@ -90,7 +106,7 @@ jobs:
           sparse-checkout: .github/actions/board-sync
           persist-credentials: false
 
-      - name: Move the cards
+      - name: Move the cards (or put the issue on the board)
         uses: ./.board-sync/.github/actions/board-sync
         with:
           project-number: ${{ inputs.project-number }}
@@ -99,3 +115,6 @@ jobs:
           app-client-id: ${{ inputs.app-client-id }}
           app-private-key: ${{ secrets.BOARD_APP_KEY }}
           project-token: ${{ secrets.PROJECT_TOKEN }}
+          issue: ${{ inputs.issue }}
+          column: ${{ inputs.column }}
+          priority: ${{ inputs.priority }}

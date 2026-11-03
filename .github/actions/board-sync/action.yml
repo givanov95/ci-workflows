@@ -1,7 +1,8 @@
 name: Board sync
 description: >-
-  Moves the cards of the issues a PR / push refers to on a GitHub Project board, as a step of an
-  existing job. The reusable workflow board-sync.yml runs this same action in a job of its own.
+  Moves the cards of the issues a PR / push refers to on a GitHub Project board, or (with `issue`)
+  puts one given issue on the board, as a step of an existing job. The reusable workflow
+  board-sync.yml runs this same action in a job of its own.
 
 # Use it as the last step of a job that runs anyway (e.g. after the deploy), so moving the cards
 # costs no extra billed minute:
@@ -15,6 +16,22 @@ description: >-
 # The job needs `contents: read, issues: read, pull-requests: read`. Events, columns, tokens and
 # the forward-only rule are those of board-sync.yml (see README).
 # Dependabot runs are a green no-op, and Dependabot's commits are ignored on push and in PR commits.
+#
+# Add mode - put an issue this job opened on the board (e.g. a scheduled check that files an issue):
+#
+#   - uses: givanov95/ci-workflows/.github/actions/board-sync@<sha> # vX.Y.Z
+#     if: steps.audit.outputs.issue != ''
+#     with:
+#       project-owner: gwebsolutions-dev
+#       project-number: 1
+#       issue: ${{ steps.audit.outputs.issue }}
+#       app-client-id: Iv23liy46aBedLh9vZoN
+#       app-private-key: ${{ secrets.BOARD_APP_KEY }}
+#
+# The event is ignored. Adding is idempotent (a card already on the board keeps its column);
+# `column` moves the card forward only, `priority` is set only on a card that has none. No board
+# key, or an App whose board owner is not the repository owner (its token cannot see the issue),
+# is a notice to add the card by hand, not a failure. Needs `issues: read` (github-token).
 
 inputs:
   project-number:
@@ -38,14 +55,24 @@ inputs:
   github-token:
     description: Token that reads the PR, its commits and the issues of this repository.
     default: ${{ github.token }}
+  issue:
+    description: Add mode - number of an issue of this repository to put on the board. Empty = event mode (move the cards of the PR / push).
+    default: ''
+  column:
+    description: Add mode - column to move the card to, forward only (e.g. New, Ready). Empty = leave it to the board ("Item added" sets New).
+    default: ''
+  priority:
+    description: Add mode - option of the board's Priority field (e.g. P1), set only when the card has no priority yet.
+    default: ''
 
 runs:
   using: composite
   steps:
     - name: Create a GitHub App installation token
       id: app
-      # not on a Dependabot run: the script skips it anyway (a stale Dependabot secret must not fail it)
-      if: ${{ inputs.app-client-id != '' && inputs.app-private-key != '' && github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' }}
+      # not on a Dependabot run: the script skips it anyway (a stale Dependabot secret must not fail it);
+      # in add mode not for a repository of another owner either (the token could not see the issue)
+      if: ${{ inputs.app-client-id != '' && inputs.app-private-key != '' && github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' && (inputs.issue == '' || github.repository_owner == (inputs.project-owner || github.repository_owner)) }}
       uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
       with:
         client-id: ${{ inputs.app-client-id }}
@@ -55,7 +82,7 @@ runs:
         permission-issues: read
         permission-pull-requests: read
 
-    - name: Work out the target column and move the cards
+    - name: Move the cards (or put the issue on the board)
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
@@ -78,4 +105,7 @@ runs:
         PROJECT_NUMBER: ${{ inputs.project-number }}
         PROJECT_OWNER: ${{ inputs.project-owner }}
         STAGING_ENV: ${{ inputs.staging-environment }}
+        ISSUE: ${{ inputs.issue }}
+        COLUMN: ${{ inputs.column }}
+        PRIORITY: ${{ inputs.priority }}
       run: bash "$GITHUB_ACTION_PATH/sync.sh"
