@@ -57,6 +57,8 @@ runs:
         GH_REPO: ${{ github.repository }}
         EVENT: ${{ github.event_name }}
         SHA: ${{ github.sha }}
+        REF_NAME: ${{ github.ref_name }}
+        BEFORE: ${{ github.event.before }}
         WORKFLOW_REF: ${{ github.workflow_ref }}
         RUN_ID: ${{ github.run_id }}
       run: bash "$GITHUB_ACTION_PATH/skip.sh"

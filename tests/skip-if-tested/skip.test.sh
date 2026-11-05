@@ -43,7 +43,7 @@ R=acme/app
 P=repos_acme_app
 WF=ci.yml
 A=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa   # the pushed commit
-M=9999999999999999999999999999999999999999   # its first parent: the base branch before the merge
+M=9999999999999999999999999999999999999999   # the branch before the push (event.before), A's first parent
 H=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb   # head of its merged PR
 T=1111111111111111111111111111111111111111   # tree of A
 U=2222222222222222222222222222222222222222   # another tree
@@ -60,9 +60,9 @@ runs() { file "$(runs_key "$1" "$2").json" "{\"workflow_runs\":$3}"; }   # runs 
 # run <id> <event> [repo] [actor]
 run() { printf '{"id":%s,"event":"%s","html_url":"https://github.com/acme/app/actions/runs/%s","head_repository":{"full_name":"%s"},"actor":{"login":"%s"}}' "$1" "$2" "$1" "${3:-$R}" "${4:-someone}"; }
 commit() { file "${P}_git_commits_$1.json" "{\"sha\":\"$1\",\"tree\":{\"sha\":\"$2\"},\"parents\":[${3:+{\"sha\":\"$3\"\}}]}"; }  # commit <sha> <tree> [parent]
-compare() { file "${P}_compare_$1...$2.json" "{\"status\":\"$3\"}"; }
+compare() { file "${P}_compare_$1...$2?per_page=1.json" "{\"status\":\"$3\"}"; }
 pulls() { file "${P}_commits_${A}_pulls.json" "$1"; }
-pr() { printf '{"number":%s,"merged_at":%s,"head":{"sha":"%s"}}' "$1" "$2" "$3"; }
+pr() { printf '{"number":%s,"merged_at":%s,"head":{"sha":"%s"},"base":{"ref":"%s"}}' "$1" "$2" "$3" "${4:-main}"; }  # pr <n> <merged_at> <head> [base]
 MERGED='"2026-11-05T10:00:00Z"'
 # a PR #12 of A: head H with A's files, containing M, nothing for A itself
 pr_setup() { runs "$A" push '[]'; commit "$A" "$T" "$M"; commit "$H" "$T"; compare "$M" "$H" ahead; pulls "[$(pr 12 "$MERGED" "$H")]"; }
@@ -71,7 +71,7 @@ pr_setup() { runs "$A" push '[]'; commit "$A" "$T" "$M"; commit "$H" "$T"; compa
 step() {
     : > "$stub/output"
     env -i PATH="$work/bin:$PATH" STUB="$stub" RUNNER_TEMP="$work" GITHUB_OUTPUT="$stub/output" \
-        GH_TOKEN=x GH_REPO="$R" EVENT=push SHA="$A" RUN_ID="$RUN" \
+        GH_TOKEN=x GH_REPO="$R" EVENT=push SHA="$A" RUN_ID="$RUN" REF_NAME=main BEFORE="$M" \
         WORKFLOW_REF="$R/.github/workflows/$WF@refs/heads/main" \
         "$@" bash "$script" > "$stub/log" 2>&1
     rc=$?
@@ -207,7 +207,7 @@ new_case 'an open (not merged) PR of the commit does not count'
 pr_setup; pulls "[$(pr 15 null "$H")]"; runs "$H" pull_request "[$(run 416 pull_request)]"
 step
 want 'skip=false' output_is 'skip=false'
-want 'no merged PR' log_has 'no merged pull request'
+want 'no merged PR' log_has 'no pull request merged into main'
 want 'no extra call for the tree' not_called "git/commits/$A"
 done_case
 
@@ -255,7 +255,7 @@ want 'names the failing call' log_has "git/commits/$H"
 done_case
 
 new_case 'the comparison fails -> warning, tests run'
-pr_setup; rm "$stub/${P}_compare_$M...$H.json"; runs "$H" pull_request "[$(run 419 pull_request)]"
+pr_setup; rm "$stub/${P}_compare_$M...$H?per_page=1.json"; runs "$H" pull_request "[$(run 419 pull_request)]"
 step
 want 'skip=false' output_is 'skip=false'
 want 'names the failing call' log_has "compare/$M...$H"
@@ -268,11 +268,39 @@ want 'skip=false' output_is 'skip=false'
 want 'a warning' log_has 'Server Error'
 done_case
 
-new_case 'a commit without a parent -> tests run'
+new_case 'a new branch (before = zeros) and a commit without a parent -> tests run'
 pr_setup; commit "$A" "$T"; runs "$H" pull_request "[$(run 421 pull_request)]"
-step
+step BEFORE=0000000000000000000000000000000000000000
 want 'skip=false' output_is 'skip=false'
-want 'says so' log_has 'no parent commit'
+want 'says so' log_has 'no base commit'
+done_case
+
+new_case 'a new branch (before = zeros) falls back to the first parent -> skip'
+pr_setup; runs "$H" pull_request "[$(run 422 pull_request)]"
+step BEFORE=0000000000000000000000000000000000000000
+want 'skip=true' output_is 'skip=true'
+want 'compared with the parent' called "compare/$M...$H"
+done_case
+
+new_case 'rebase merge: the first parent is a rewritten commit, before is in the head -> skip'
+Q=7777777777777777777777777777777777777777
+pr_setup; commit "$A" "$T" "$Q"; runs "$H" pull_request "[$(run 423 pull_request)]"
+step
+want 'skip=true' output_is 'skip=true'
+want 'compared with before, not the parent' not_called "compare/$Q"
+done_case
+
+new_case 'a PR merged into another branch does not count (push to staging of a PR head to main)'
+pr_setup; pulls "[$(pr 24 "$MERGED" "$H" main)]"; runs "$H" pull_request "[$(run 424 pull_request)]"
+step REF_NAME=staging
+want 'skip=false' output_is 'skip=false'
+want 'says so' log_has 'no pull request merged into staging'
+done_case
+
+new_case 'no branch name -> warning, tests run'
+step REF_NAME=
+want 'skip=false' output_is 'skip=false'
+want 'a warning' log_has 'REF_NAME'
 done_case
 
 new_case 'no full SHA -> warning, tests run'

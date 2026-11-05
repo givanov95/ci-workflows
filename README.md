@@ -395,17 +395,25 @@ On a **push** (any other event gives `skip=false`) the code counts as tested whe
 of the same workflow file**, from this repository and not started by Dependabot, exists for:
 
 - the **same commit**, from a `push` run — a fast-forward promotion; or
-- the head of this commit's **merged pull request**, from a `pull_request` run, when that head has the
-  **same tree** (the same files) as the pushed commit **and contains its first parent** (the base
-  branch before the merge). A `pull_request` run tests the head merged with the base of that moment;
-  every such base is an ancestor of that parent, so of the head — the files it tested were the
-  head's. A PR that was behind its base runs the tests.
+- the head of a pull request **merged into the pushed branch**, from a `pull_request` run, when that
+  head has the **same tree** (the same files) as the pushed commit **and contains the branch as it
+  was before this push** (`github.event.before`). A `pull_request` run tests the head merged with the
+  base of that moment; every such base is an ancestor of the branch before the push, so of the head
+  — the files it tested were the head's. A PR that was behind its base runs the tests. Squash, merge
+  commit and rebase merges all qualify.
 
 Dispatch, schedule, fork and Dependabot runs never count (other inputs, no secrets). It is a match
-only when the earlier run did the same checks, so the test job must not change by event (no test
-step behind `github.event_name == 'push'`, none that needs a secret a pull request does not get),
-and what it uses must be pinned (a reusable workflow at `@main` is the same file, not the same code).
-Known gap: one head opened as pull requests to two different bases.
+only when the earlier run did the same checks, so use it only where:
+
+- the test job does the same on a pull request as on a push, and on every branch — no test step
+  behind `github.event_name` or `github.ref` (a staging push run of a commit counts for `main`), none
+  that needs a secret a pull request does not get;
+- a successful run means the tests ran — no `pull_request` types (`closed`, `labeled`) whose run
+  skips the test job with a job-level `if:` and still ends green;
+- what it uses is pinned (a reusable workflow at `@main` is the same file, not the same code).
+
+Known gap: a pull request whose base branch was changed after its last run (its run tested the old
+base); push a commit or re-run it after retargeting.
 
 It **never skips on doubt**: a GitHub error, a missing permission or an unexpected answer is a
 warning and `skip=false`, and the action never fails the job. No checkout, no third-party action.
@@ -456,8 +464,10 @@ keeps its test job short — also the ones that are under a boundary today, sinc
   user of a CI service is). Only for tests that do not share files, cache keys or ports; check
   locally first, and leave it out where it is flaky.
 - **Databases in memory** — a throwaway service database needs no durability:
-  `options: --tmpfs /var/lib/postgresql` (every version — `postgres:18` keeps its data in
-  `/var/lib/postgresql/18/docker`, older ones in `…/data`; MySQL/MariaDB: `--tmpfs /var/lib/mysql`).
+  `options: --tmpfs /var/lib/postgresql/data` for `postgres:17` and older (the image declares that
+  path a volume, so a tmpfs on its parent would be covered by a disk volume), `--tmpfs
+  /var/lib/postgresql` for `postgres:18` (data in `/var/lib/postgresql/18/docker`); MySQL/MariaDB:
+  `--tmpfs /var/lib/mysql`.
 - **Caches** — `ramsey/composer-install` for Composer, `actions/setup-node` with `cache: npm`.
 - **Only the steps the tests need** — one `npm ci`, a Vite build only when the tests render it
   (a committed `public/build` needs none), no tools installed that no step uses.
