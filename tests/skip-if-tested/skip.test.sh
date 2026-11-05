@@ -43,6 +43,7 @@ R=acme/app
 P=repos_acme_app
 WF=ci.yml
 A=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa   # the pushed commit
+M=9999999999999999999999999999999999999999   # its first parent: the base branch before the merge
 H=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb   # head of its merged PR
 T=1111111111111111111111111111111111111111   # tree of A
 U=2222222222222222222222222222222222222222   # another tree
@@ -54,11 +55,17 @@ n=0
 stub=
 new_case() { n=$((n+1)); name=$1; stub="$work/case$n"; mkdir -p "$stub"; : > "$stub/calls"; errors=(); }
 file() { printf '%s' "$2" > "$stub/$1"; }                         # file <name> <content>
-runs() { file "${P}_actions_workflows_${WF}_runs?head_sha=$1&status=success&per_page=10.json" "{\"workflow_runs\":$2}"; }
-run() { printf '{"id":%s,"event":"%s","html_url":"https://github.com/acme/app/actions/runs/%s"}' "$1" "$2" "$1"; }
-tree() { file "${P}_git_commits_$1.json" "{\"sha\":\"$1\",\"tree\":{\"sha\":\"$2\"}}"; }
+runs_key() { echo "${P}_actions_workflows_${WF}_runs?head_sha=$1&event=$2&status=success&per_page=20"; }
+runs() { file "$(runs_key "$1" "$2").json" "{\"workflow_runs\":$3}"; }   # runs <sha> <event> <json array>
+# run <id> <event> [repo] [actor]
+run() { printf '{"id":%s,"event":"%s","html_url":"https://github.com/acme/app/actions/runs/%s","head_repository":{"full_name":"%s"},"actor":{"login":"%s"}}' "$1" "$2" "$1" "${3:-$R}" "${4:-someone}"; }
+commit() { file "${P}_git_commits_$1.json" "{\"sha\":\"$1\",\"tree\":{\"sha\":\"$2\"},\"parents\":[${3:+{\"sha\":\"$3\"\}}]}"; }  # commit <sha> <tree> [parent]
+compare() { file "${P}_compare_$1...$2.json" "{\"status\":\"$3\"}"; }
 pulls() { file "${P}_commits_${A}_pulls.json" "$1"; }
 pr() { printf '{"number":%s,"merged_at":%s,"head":{"sha":"%s"}}' "$1" "$2" "$3"; }
+MERGED='"2026-11-05T10:00:00Z"'
+# a PR #12 of A: head H with A's files, containing M, nothing for A itself
+pr_setup() { runs "$A" push '[]'; commit "$A" "$T" "$M"; commit "$H" "$T"; compare "$M" "$H" ahead; pulls "[$(pr 12 "$MERGED" "$H")]"; }
 
 # step [VAR=value ...] - runs the script as the action does; rc, log and outputs are kept
 step() {
@@ -105,26 +112,33 @@ for event in pull_request workflow_dispatch schedule merge_group; do
 done
 
 # ── a) the same commit ───────────────────────────────────────────────────────────────────────
-new_case 'the same commit passed this workflow (fast-forward) -> skip'
-runs "$A" "[$(run 501 push)]"
+new_case 'the same commit passed a push run (fast-forward) -> skip'
+runs "$A" push "[$(run 501 push)]"
 step
 want 'exit 0' rc_is 0
 want 'skip=true' output_is 'skip=true'
 want 'names the run' log_has 'actions/runs/501'
 want 'a notice' log_has '::notice'
-want 'stops there' not_called "git/commits/$A"
+want 'stops there' not_called "commits/$A/pulls"
+want 'asks for push runs only' called "head_sha=$A&event=push&status=success"
 done_case
 
 new_case 'only this run itself for the commit -> not a match, goes on to the PR'
-runs "$A" "[$(run "$RUN" push)]"; tree "$A" "$T"; pulls '[]'
+runs "$A" push "[$(run "$RUN" push)]"; pulls '[]'
 step
 want 'skip=false' output_is 'skip=false'
 want 'looked for the PR' called "commits/$A/pulls"
 done_case
 
-new_case 'the workflow is read from WORKFLOW_REF (a reusable caller, .yaml)'
+new_case 'a push run of the commit from Dependabot does not count'
+runs "$A" push "[$(run 503 push "$R" 'dependabot[bot]')]"; pulls '[]'
+step
+want 'skip=false' output_is 'skip=false'
+done_case
+
+new_case 'the workflow is read from WORKFLOW_REF (.yaml, another branch)'
 WF=deploy.yaml
-runs "$A" "[$(run 502 push)]"
+runs "$A" push "[$(run 502 push)]"
 step WORKFLOW_REF="$R/.github/workflows/deploy.yaml@refs/heads/staging"
 want 'skip=true' output_is 'skip=true'
 want 'asked for deploy.yaml runs' called 'actions/workflows/deploy.yaml/runs'
@@ -132,57 +146,84 @@ done_case
 WF=ci.yml
 
 # ── b) the merged PR ─────────────────────────────────────────────────────────────────────────
-new_case 'merged PR with the same files passed -> skip'
-runs "$A" '[]'; tree "$A" "$T"; tree "$H" "$T"
-pulls "[$(pr 12 '"2026-11-05T10:00:00Z"' "$H")]"
-runs "$H" "[$(run 410 pull_request)]"
+new_case 'merged PR, same files, contains the base, passed -> skip'
+pr_setup; runs "$H" pull_request "[$(run 410 pull_request)]"
 step
 want 'exit 0' rc_is 0
 want 'skip=true' output_is 'skip=true'
 want 'names the PR' log_has 'PR #12'
 want 'names the run' log_has 'actions/runs/410'
+want 'asks for pull_request runs' called "head_sha=$H&event=pull_request&status=success"
+done_case
+
+new_case 'merged PR whose head is the base itself (identical) -> skip'
+pr_setup; compare "$M" "$H" identical; runs "$H" pull_request "[$(run 420 pull_request)]"
+step
+want 'skip=true' output_is 'skip=true'
 done_case
 
 new_case 'merged PR that was behind its base (other files) -> tests run'
-runs "$A" '[]'; tree "$A" "$T"; tree "$H" "$U"
-pulls "[$(pr 13 '"2026-11-05T10:00:00Z"' "$H")]"
-runs "$H" "[$(run 411 pull_request)]"
+pr_setup; commit "$H" "$U"; runs "$H" pull_request "[$(run 411 pull_request)]"
 step
 want 'skip=false' output_is 'skip=false'
 want 'says why' log_has 'it was behind its base'
 want 'no runs asked for the PR head' not_called "head_sha=$H"
 done_case
 
-new_case 'merged PR with the same files but no successful run -> tests run'
-runs "$A" '[]'; tree "$A" "$T"; tree "$H" "$T"
-pulls "[$(pr 14 '"2026-11-05T10:00:00Z"' "$H")]"
-runs "$H" '[]'
+new_case 'same files but the head does not contain the base (tested against another base) -> tests run'
+pr_setup; compare "$M" "$H" diverged; runs "$H" pull_request "[$(run 412 pull_request)]"
 step
 want 'skip=false' output_is 'skip=false'
-want 'says so' log_has 'no successful run'
+want 'says why' log_has 'tested against another base'
+want 'no runs asked for the PR head' not_called "head_sha=$H"
+done_case
+
+new_case 'merged PR with the same files but no successful run -> tests run'
+pr_setup; runs "$H" pull_request '[]'
+step
+want 'skip=false' output_is 'skip=false'
+want 'says so' log_has 'no successful pull_request run'
+done_case
+
+new_case 'a Dependabot PR run does not count'
+pr_setup; runs "$H" pull_request "[$(run 413 pull_request "$R" 'dependabot[bot]')]"
+step
+want 'skip=false' output_is 'skip=false'
+done_case
+
+new_case 'a fork PR run does not count'
+pr_setup; runs "$H" pull_request "[$(run 414 pull_request someone/app)]"
+step
+want 'skip=false' output_is 'skip=false'
+done_case
+
+new_case 'a dispatch run in the pull_request answer does not count'
+pr_setup; runs "$H" pull_request "[$(run 415 workflow_dispatch)]"
+step
+want 'skip=false' output_is 'skip=false'
 done_case
 
 new_case 'an open (not merged) PR of the commit does not count'
-runs "$A" '[]'; tree "$A" "$T"; tree "$H" "$T"
-pulls "[$(pr 15 null "$H")]"
-runs "$H" "[$(run 412 pull_request)]"
+pr_setup; pulls "[$(pr 15 null "$H")]"; runs "$H" pull_request "[$(run 416 pull_request)]"
 step
 want 'skip=false' output_is 'skip=false'
 want 'no merged PR' log_has 'no merged pull request'
+want 'no extra call for the tree' not_called "git/commits/$A"
 done_case
 
-new_case 'a direct push without a PR -> tests run'
-runs "$A" '[]'; tree "$A" "$T"; pulls '[]'
+new_case 'a direct push without a PR -> tests run, no tree asked for'
+runs "$A" push '[]'; pulls '[]'
 step
 want 'exit 0' rc_is 0
 want 'skip=false' output_is 'skip=false'
+want 'no tree call' not_called "git/commits/$A"
 done_case
 
 new_case 'two merged PRs: the second one matches -> skip'
 C=cccccccccccccccccccccccccccccccccccccccc
-runs "$A" '[]'; tree "$A" "$T"; tree "$C" "$U"; tree "$H" "$T"
-pulls "[$(pr 16 '"2026-11-04T10:00:00Z"' "$C"),$(pr 17 '"2026-11-05T10:00:00Z"' "$H")]"
-runs "$H" "[$(run 413 pull_request)]"
+pr_setup; commit "$C" "$U"
+pulls "[$(pr 16 "$MERGED" "$C"),$(pr 17 "$MERGED" "$H")]"
+runs "$H" pull_request "[$(run 417 pull_request)]"
 step
 want 'skip=true' output_is 'skip=true'
 want 'names PR 17' log_has 'PR #17'
@@ -190,16 +231,16 @@ done_case
 
 # ── never skip on doubt ──────────────────────────────────────────────────────────────────────
 new_case 'runs cannot be read (no actions: read) -> warning, tests run'
-file "${P}_actions_workflows_${WF}_runs?head_sha=$A&status=success&per_page=10.fail" 'gh: Resource not accessible by integration (HTTP 403)'
+file "$(runs_key "$A" push).fail" 'gh: Resource not accessible by integration (HTTP 403)'
 step
 want 'exit 0' rc_is 0
 want 'skip=false' output_is 'skip=false'
 want 'a warning with the reason' log_has 'Resource not accessible'
-want 'stops there' not_called "git/commits/$A"
+want 'stops there' not_called "commits/$A/pulls"
 done_case
 
 new_case 'the PRs cannot be read (no pull-requests: read) -> warning, tests run'
-runs "$A" '[]'; tree "$A" "$T"
+runs "$A" push '[]'
 file "${P}_commits_${A}_pulls.fail" 'gh: Resource not accessible by integration (HTTP 403)'
 step
 want 'skip=false' output_is 'skip=false'
@@ -207,20 +248,31 @@ want 'a warning' log_has '::warning'
 done_case
 
 new_case 'the PR head tree cannot be read -> warning, tests run (no skip after it)'
-runs "$A" '[]'; tree "$A" "$T"
-pulls "[$(pr 18 '"2026-11-05T10:00:00Z"' "$H")]"
+pr_setup; rm "$stub/${P}_git_commits_$H.json"; runs "$H" pull_request "[$(run 418 pull_request)]"
 step
 want 'skip=false' output_is 'skip=false'
 want 'names the failing call' log_has "git/commits/$H"
 done_case
 
+new_case 'the comparison fails -> warning, tests run'
+pr_setup; rm "$stub/${P}_compare_$M...$H.json"; runs "$H" pull_request "[$(run 419 pull_request)]"
+step
+want 'skip=false' output_is 'skip=false'
+want 'names the failing call' log_has "compare/$M...$H"
+done_case
+
 new_case 'the runs of the PR head cannot be read -> warning, tests run'
-runs "$A" '[]'; tree "$A" "$T"; tree "$H" "$T"
-pulls "[$(pr 19 '"2026-11-05T10:00:00Z"' "$H")]"
-file "${P}_actions_workflows_${WF}_runs?head_sha=$H&status=success&per_page=10.fail" 'gh: Server Error (HTTP 500)'
+pr_setup; file "$(runs_key "$H" pull_request).fail" 'gh: Server Error (HTTP 500)'
 step
 want 'skip=false' output_is 'skip=false'
 want 'a warning' log_has 'Server Error'
+done_case
+
+new_case 'a commit without a parent -> tests run'
+pr_setup; commit "$A" "$T"; runs "$H" pull_request "[$(run 421 pull_request)]"
+step
+want 'skip=false' output_is 'skip=false'
+want 'says so' log_has 'no parent commit'
 done_case
 
 new_case 'no full SHA -> warning, tests run'
@@ -240,6 +292,12 @@ new_case 'no run id -> warning, tests run'
 step RUN_ID=
 want 'skip=false' output_is 'skip=false'
 want 'a warning' log_has 'RUN_ID'
+done_case
+
+new_case 'a bad repository name -> warning, tests run'
+step GH_REPO='acme/app" or true'
+want 'skip=false' output_is 'skip=false'
+want 'no GitHub call' not_called 'gh '
 done_case
 
 echo "skip.test.sh: $passed passed, $failed failed"

@@ -392,20 +392,30 @@ already tested. A fast-forward `staging` → `main` pushes a commit `staging` al
 action tells the test job so, and the test steps are skipped.
 
 On a **push** (any other event gives `skip=false`) the code counts as tested when a **successful run
-of the same workflow file** exists for:
+of the same workflow file**, from this repository and not started by Dependabot, exists for:
 
-- the **same commit** — a fast-forward promotion; or
-- the head of this commit's **merged pull request**, when that head has the **same tree** (the same
-  files) as the pushed commit. A PR that was behind its base gives the base a tree nobody tested, so
-  the tests run. The same tree also means the same workflow file, so the earlier run checked what
-  this one would.
+- the **same commit**, from a `push` run — a fast-forward promotion; or
+- the head of this commit's **merged pull request**, from a `pull_request` run, when that head has the
+  **same tree** (the same files) as the pushed commit **and contains its first parent** (the base
+  branch before the merge). A `pull_request` run tests the head merged with the base of that moment;
+  every such base is an ancestor of that parent, so of the head — the files it tested were the
+  head's. A PR that was behind its base runs the tests.
+
+Dispatch, schedule, fork and Dependabot runs never count (other inputs, no secrets). It is a match
+only when the earlier run did the same checks, so the test job must not change by event (no test
+step behind `github.event_name == 'push'`, none that needs a secret a pull request does not get),
+and what it uses must be pinned (a reusable workflow at `@main` is the same file, not the same code).
+Known gap: one head opened as pull requests to two different bases.
 
 It **never skips on doubt**: a GitHub error, a missing permission or an unexpected answer is a
 warning and `skip=false`, and the action never fails the job. No checkout, no third-party action.
 
 Guard the **steps**, not the job: a test job skipped with a job-level `if:` also skips a deploy job
 that `needs:` it. The job then still costs about a minute (and starts its `services:`, ~20 s), not
-the whole test run:
+the whole test run. **Every** step after it needs the guard — a step added later without it runs on
+a job with no checkout and fails only on the merges that skip. And anything the deploy takes from the
+test job (an uploaded artifact, a job output) is not there on a skip: build what the deploy needs in
+the deploy job, or leave that step unguarded and give it what it needs.
 
 ```yaml
 permissions:            # without them the action finds nothing and the tests run
@@ -446,7 +456,8 @@ keeps its test job short — also the ones that are under a boundary today, sinc
   user of a CI service is). Only for tests that do not share files, cache keys or ports; check
   locally first, and leave it out where it is flaky.
 - **Databases in memory** — a throwaway service database needs no durability:
-  `options: --tmpfs /var/lib/postgresql/data` (MySQL/MariaDB: `--tmpfs /var/lib/mysql`).
+  `options: --tmpfs /var/lib/postgresql` (every version — `postgres:18` keeps its data in
+  `/var/lib/postgresql/18/docker`, older ones in `…/data`; MySQL/MariaDB: `--tmpfs /var/lib/mysql`).
 - **Caches** — `ramsey/composer-install` for Composer, `actions/setup-node` with `cache: npm`.
 - **Only the steps the tests need** — one `npm ci`, a Vite build only when the tests render it
   (a committed `public/build` needs none), no tools installed that no step uses.

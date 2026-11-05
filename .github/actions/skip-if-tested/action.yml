@@ -21,12 +21,14 @@ description: >-
 #       run: php artisan test
 #
 # Only a push is checked; every other event (pull_request, workflow_dispatch, schedule, merge_group)
-# gives skip=false. The code counts as tested when a SUCCESSFUL run of the same workflow file exists
-# for the same commit (a fast-forward staging -> main) or for the head of this commit's merged pull
-# request with the same tree (a squash/merge of a PR that was up to date with its base). The same
-# tree also means the same workflow file. A PR that was behind its base gives a tree nobody tested,
-# so the tests run. Any GitHub error or missing permission is a warning and skip=false - this action
-# never skips on doubt and never fails the job. No checkout and no third-party action.
+# gives skip=false. The code counts as tested when a SUCCESSFUL run of the same workflow file, from
+# this repository and not started by Dependabot, exists for the same commit (a push run - a
+# fast-forward staging -> main) or for the head of this commit's merged pull request (a pull_request
+# run) when that head has the same tree and contains the commit's first parent - then every base it
+# was tested against is in it. A PR that was behind its base runs the tests. The test job must do the
+# same checks on a pull request as on a push (no step behind github.event_name, no secret a PR lacks).
+# Any GitHub error, timeout or missing permission is a warning and skip=false - this action never
+# skips on doubt and never fails the job. No checkout and no third-party action.
 #
 # A job with `services:` still starts them (~20 s) before the first step; the job then costs about a
 # minute instead of the full test run.

@@ -4,15 +4,19 @@
 #   skip.sh   EVENT, SHA, WORKFLOW_REF, RUN_ID -> outputs skip (true | false), reason
 #
 # Only a push is checked (any other event: skip=false). The code counts as tested when a successful
-# run of the SAME workflow file exists for:
-#   a) the same commit - e.g. a fast-forward staging -> main pushes a commit staging already tested;
-#   b) the head of the merged pull request of this commit, when that head has the same tree (the
-#      same files) as this commit - a squash or merge of a PR that was up to date with its base.
-#      A PR that was behind its base gives the base branch a tree it never tested, so it runs.
-# The same tree also means the same workflow file, so the earlier run checked what this one would.
+# run of the SAME workflow file, from this repository and not Dependabot's, exists for:
+#   a) the same commit, from a PUSH - e.g. a fast-forward staging -> main pushes a commit staging
+#      already tested (a push run tests exactly its commit);
+#   b) the head of the merged pull request of this commit, from a PULL_REQUEST run, when that head
+#      has the same tree (the same files) as this commit AND contains its first parent (the base
+#      branch before the merge). A pull_request run tests the head merged with the base of that
+#      moment; every such base is an ancestor of that parent, so of the head, and the tested files
+#      were the head's. A PR that was behind its base runs the tests.
+# The same tree also means the same workflow file. A dispatch, schedule or Dependabot/fork run never
+# counts: it may run other steps or lack secrets. Known gap: one head opened as PRs to two bases.
 #
-# Always exits 0 and never skips on doubt: a GitHub error, a missing permission or an unexpected
-# answer is a warning and skip=false, so the tests run as they would without this action.
+# Always exits 0 and never skips on doubt: a GitHub error, a missing permission, a timeout or an
+# unexpected answer is a warning and skip=false, so the tests run as they would without this action.
 #
 # Needs GH_TOKEN (actions: read, contents: read, pull-requests: read) and GH_REPO (owner/repo).
 # No checkout: everything goes through the GitHub API. Tested by tests/skip-if-tested/skip.test.sh.
@@ -34,14 +38,14 @@ skip() {
 # api <path> <jq filter>: the answer on stdout. Called in $(...), so it cannot end the script
 # itself: on an error it returns 1 and the caller ends with `|| gh_error` (skip=false).
 api() {
-  gh api "$1" --jq "$2" </dev/null 2>"$tmp/gh.err" || { printf '%s' "$1" > "$tmp/gh.path"; return 1; }
+  timeout 30 gh api "$1" --jq "$2" </dev/null 2>"$tmp/gh.err" || { printf '%s' "$1" > "$tmp/gh.path"; return 1; }
 }
 gh_error() {
   run_tests "GitHub error" "GitHub error on $(cat "$tmp/gh.path" 2>/dev/null): $(head -c 300 "$tmp/gh.err" 2>/dev/null | tr '\n' ' ')"
 }
 
 [ "${EVENT:-}" = push ] || run_tests "not a push (${EVENT:-no event})"
-[ -n "${GH_REPO:-}" ] || run_tests "no repository" "GH_REPO is not set"
+[[ "${GH_REPO:-}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || run_tests "no repository" "GH_REPO must be owner/repo, not '${GH_REPO:-}'"
 [[ "${SHA:-}" =~ ^[0-9a-f]{40}$ ]] || run_tests "no commit" "SHA must be a full commit SHA, not '${SHA:-}'"
 [[ "${RUN_ID:-}" =~ ^[0-9]+$ ]] || run_tests "no run id" "RUN_ID must be a number, not '${RUN_ID:-}'"
 # github.workflow_ref: owner/repo/.github/workflows/ci.yml@refs/heads/main
@@ -49,21 +53,24 @@ workflow="${WORKFLOW_REF:-}"; workflow="${workflow%%@*}"; workflow="${workflow##
 [[ "$workflow" =~ ^[A-Za-z0-9._-]+\.ya?ml$ ]] || run_tests "no workflow" "cannot read the workflow file from WORKFLOW_REF '${WORKFLOW_REF:-}'"
 
 runs="repos/$GH_REPO/actions/workflows/$workflow/runs"
-# passed <sha>: "<event> run <url>" of a successful run of this workflow for <sha> other than this one
+# passed <sha> <event>: "<event> run <url>" of a successful <event> run of this workflow for <sha>,
+# other than this run, from this repository (not a fork) and not started by Dependabot
 passed() {
-  api "$runs?head_sha=$1&status=success&per_page=10" \
-    "[.workflow_runs[] | select(.id != $RUN_ID)] | first | select(. != null) | \"\(.event) run \(.html_url)\""
+  api "$runs?head_sha=$1&event=$2&status=success&per_page=20" \
+    "[.workflow_runs[] | select(.id != $RUN_ID and .event == \"$2\" and .head_repository.full_name == \"$GH_REPO\" and .actor.login != \"dependabot[bot]\")] | first | select(. != null) | \"\(.event) run \(.html_url)\""
 }
 
-# a) the same commit
-found="$(passed "$SHA")" || gh_error
+# a) the same commit, tested by a push
+found="$(passed "$SHA" push)" || gh_error
 [ -z "$found" ] || skip "commit ${SHA:0:12} already passed this workflow ($found)"
 
-# b) the head of the merged PR, with the same files
-tree="$(api "repos/$GH_REPO/git/commits/$SHA" .tree.sha)" || gh_error
-[[ "$tree" =~ ^[0-9a-f]{40}$ ]] || run_tests "no tree" "GitHub gave no tree for ${SHA:0:12}"
+# b) the head of the merged PR: same files, contains the base, tested by a pull_request run
 heads="$(api "repos/$GH_REPO/commits/$SHA/pulls" '.[] | select(.merged_at != null) | "\(.number) \(.head.sha)"')" || gh_error
 [ -n "$heads" ] || run_tests "no merged pull request for ${SHA:0:12}"
+commit="$(api "repos/$GH_REPO/git/commits/$SHA" '"\(.tree.sha) \(.parents[0].sha // "")"')" || gh_error
+read -r tree parent <<< "$commit"
+[[ "${tree:-}" =~ ^[0-9a-f]{40}$ ]] || run_tests "no tree" "GitHub gave no tree for ${SHA:0:12}"
+[[ "${parent:-}" =~ ^[0-9a-f]{40}$ ]] || run_tests "no parent commit for ${SHA:0:12}"
 
 while read -r number head; do
   [[ "$head" =~ ^[0-9a-f]{40}$ ]] || continue
@@ -72,9 +79,15 @@ while read -r number head; do
     echo "PR #$number: its head ${head:0:12} has other files than ${SHA:0:12} (it was behind its base)"
     continue
   fi
-  found="$(passed "$head")" || gh_error
+  status="$(api "repos/$GH_REPO/compare/$parent...$head" .status)" || gh_error
+  case "$status" in
+    ahead|identical) ;;
+    *) echo "PR #$number: its head ${head:0:12} does not contain ${parent:0:12} ($status) - it was tested against another base"
+       continue ;;
+  esac
+  found="$(passed "$head" pull_request)" || gh_error
   [ -z "$found" ] || skip "the same files passed this workflow in PR #$number ($found)"
-  echo "PR #$number: no successful run of $workflow for its head ${head:0:12}"
+  echo "PR #$number: no successful pull_request run of $workflow for its head ${head:0:12}"
 done <<< "$heads"
 
 run_tests "no successful run of $workflow for these files"
