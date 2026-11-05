@@ -4,6 +4,7 @@ name: Tests
 #   tests/dependabot-security-merge/decide.test.sh - the "Decide" step of dependabot-security-merge.yml
 #   tests/board-sync/sync.test.sh - .github/actions/board-sync/sync.sh (also what board-sync.yml runs)
 #   tests/deploy-release/release.test.sh - .github/actions/deploy-release/release.sh (gh and curl stubbed)
+#   tests/skip-if-tested/skip.test.sh - .github/actions/skip-if-tested/skip.sh
 # This is this repo's own CI, not a reusable workflow (no `workflow_call`).
 on:
   pull_request:
@@ -12,6 +13,7 @@ on:
       - .github/workflows/board-sync.yml
       - .github/actions/board-sync/**
       - .github/actions/deploy-release/**
+      - .github/actions/skip-if-tested/**
       - .github/workflows/tests.yml
       - tests/**
   push:
@@ -21,6 +23,7 @@ on:
       - .github/workflows/board-sync.yml
       - .github/actions/board-sync/**
       - .github/actions/deploy-release/**
+      - .github/actions/skip-if-tested/**
       - .github/workflows/tests.yml
       - tests/**
 
@@ -68,3 +71,15 @@ jobs:
 
       - name: Run release.test.sh
         run: bash tests/deploy-release/release.test.sh
+
+  skip-if-tested:
+    name: skip-if-tested script
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run skip.test.sh
+        run: bash tests/skip-if-tested/skip.test.sh

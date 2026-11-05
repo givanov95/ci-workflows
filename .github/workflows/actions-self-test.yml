@@ -3,7 +3,8 @@ name: Actions self-test
 # Runs the composite actions (.github/actions/*) from this checkout, and board-sync.yml, which
 # checks out and runs the board-sync action of its own commit. This is this repo's own CI, not a
 # reusable workflow. The board-sync cases run without a board token, so nothing is moved; the
-# deploy-release cases only check a version.json served on localhost (release: 'false').
+# deploy-release cases only check a version.json served on localhost (release: 'false'); skip-if-tested
+# only reads the runs of this workflow (on a pull request it must say 'false').
 on:
   pull_request:
     paths:
@@ -29,8 +30,19 @@ jobs:
     name: Composite actions
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # skip-if-tested reads runs (actions), commit trees (contents) and the merged PR (pull-requests)
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # On a push to main after a PR that was up to date, this is the live check that it finds the
+      # PR's run (see its reason in the log). A consumer runs it before the checkout.
+      - name: skip-if-tested — this workflow
+        id: tested
+        uses: ./.github/actions/skip-if-tested
 
       - name: health-check — a healthy URL
         id: ok
@@ -142,6 +154,9 @@ jobs:
           VERSION_TAG: ${{ steps.version_ok.outputs.tag }}
           UNKNOWN_OUTCOME: ${{ steps.version_unknown.outcome }}
           MISSING_OUTCOME: ${{ steps.version_missing.outcome }}
+          TESTED_SKIP: ${{ steps.tested.outputs.skip }}
+          TESTED_REASON: ${{ steps.tested.outputs.reason }}
+          TESTED_WANT: ${{ github.event_name == 'push' && 'true or false' || 'false' }}
           NOKEY_WANT: ${{ (github.actor == 'dependabot[bot]' || github.event.pull_request.user.login == 'dependabot[bot]') && 'success' || 'failure' }}
         run: |
           fail=0
@@ -158,6 +173,13 @@ jobs:
           check "release: no tag"         "$VERSION_TAG" ''
           check "release: unknown commit" "$UNKNOWN_OUTCOME" failure
           check "release: no version"     "$MISSING_OUTCOME" failure
+          echo "skip-if-tested: skip=$TESTED_SKIP ($TESTED_REASON)"
+          case "$TESTED_WANT" in
+            false) check "skip-if-tested: not a push" "$TESTED_SKIP" false ;;
+            *) [[ "$TESTED_SKIP" =~ ^(true|false)$ ]] || { echo "FAIL skip-if-tested: skip = '$TESTED_SKIP'"; fail=1; }
+               # a broken lookup (endpoint, permission, filter) shows as a GitHub error, not as "no run"
+               [[ "$TESTED_REASON" != "GitHub error"* ]] || { echo "FAIL skip-if-tested: $TESTED_REASON"; fail=1; } ;;
+          esac
           exit "$fail"
 
   # board-sync.yml checks out the action from its own commit (job.workflow_sha) and runs it. Without

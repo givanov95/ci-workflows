@@ -1,0 +1,68 @@
+name: Skip if tested
+description: >-
+  On a push, tells whether this exact code (the same commit, or the same files as the merged pull
+  request) already passed this workflow, so the test steps can be skipped instead of run twice.
+
+# The FIRST step of the test job, before the checkout. Guard every test step with its output -
+# never the job: a skipped test job also skips a deploy job that `needs:` it.
+#
+#   permissions:            # the job (or the workflow) - without them nothing is found, tests run
+#     actions: read         #   runs of this workflow
+#     contents: read        #   commit trees
+#     pull-requests: read   #   the merged PR of a commit
+#   steps:
+#     - name: Already tested?
+#       id: tested
+#       uses: givanov95/ci-workflows/.github/actions/skip-if-tested@<sha> # vX.Y.Z
+#     - uses: actions/checkout@...
+#       if: steps.tested.outputs.skip != 'true'
+#     - name: Run tests
+#       if: steps.tested.outputs.skip != 'true'
+#       run: php artisan test
+#
+# Only a push is checked; every other event (pull_request, workflow_dispatch, schedule, merge_group)
+# gives skip=false. The code counts as tested when a SUCCESSFUL run of the same workflow file, from
+# this repository and not started by Dependabot, exists for:
+#   - the same commit, from a push run (a fast-forward staging -> main), or
+#   - the head of a pull request merged into the pushed branch, from a pull_request run, when that
+#     head has the same tree and contains the branch as it was before the push (github.event.before)
+#     - then every base it was tested against is in it. Default branch only (GitHub lists only open
+#     PRs of a commit on other branches). A PR that was behind its base runs the tests.
+# The test job must do the same on a pull request as on a push and on every branch (no step behind
+# github.event_name or github.ref, no secret a PR lacks). Known gaps are in the README.
+# Any GitHub error, timeout or missing permission is a warning and skip=false - this action never
+# skips on doubt and never fails the job. No checkout and no third-party action. Linux runners (GNU
+# timeout; on macOS install coreutils for gtimeout).
+#
+# A job with `services:` still starts them (~20 s) before the first step; the job then costs about a
+# minute instead of the full test run.
+
+inputs:
+  github-token:
+    description: Token that reads workflow runs, commits and pull requests (actions, contents and pull-requests read).
+    default: ${{ github.token }}
+
+outputs:
+  skip:
+    description: "'true' when this code already passed this workflow (skip the test steps), otherwise 'false'."
+    value: ${{ steps.check.outputs.skip || 'false' }}
+  reason:
+    description: Why - the earlier run that passed, or why the tests run.
+    value: ${{ steps.check.outputs.reason }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check earlier runs
+      id: check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_REPO: ${{ github.repository }}
+        EVENT: ${{ github.event_name }}
+        SHA: ${{ github.sha }}
+        REF_NAME: ${{ github.ref_name }}
+        BEFORE: ${{ github.event.before }}
+        WORKFLOW_REF: ${{ github.workflow_ref }}
+        RUN_ID: ${{ github.run_id }}
+      run: bash "$GITHUB_ACTION_PATH/skip.sh"

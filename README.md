@@ -263,6 +263,7 @@ of a job that runs anyway (the deploy job), so they cost nothing extra:
 | `.github/actions/board-sync` | `board-sync.yml` | `project-number`, `project-owner`, `staging-environment` (`'true'`/`'false'`), `app-client-id`, `app-private-key` (the `BOARD_APP_KEY` secret), `project-token`; add mode: `issue`, `column`, `priority` |
 | `.github/actions/health-check` | `post-deploy-check.yml` | `url`, `expected-status`, `attempts`, `interval`, `initial-delay`, `soft`; output `healthy` |
 | `.github/actions/deploy-release` | – (action only) | `version-url`, `expected-sha`, `branch`, `release`, `github-token`; outputs `sha`, `tag`, `release` |
+| `.github/actions/skip-if-tested` | – (action only) | `github-token`; outputs `skip`, `reason` |
 
 A deploy job with a baseline, the deploy, the verdict and the cards in one runner:
 
@@ -382,6 +383,111 @@ jobs:
           app-client-id: Iv23liy46aBedLh9vZoN
           app-private-key: ${{ secrets.BOARD_APP_KEY }}
 ```
+
+### `skip-if-tested` — do not run the same tests twice
+
+A repo that tests every pull request and then every push to `main` runs the tests twice on the same
+code: a squash merge of a PR that was up to date with `main` gives `main` exactly the files the PR
+already tested. A fast-forward `staging` → `main` pushes a commit `staging` already tested. This
+action tells the test job so, and the test steps are skipped.
+
+On a **push** (any other event gives `skip=false`) the code counts as tested when a **successful run
+of the same workflow file**, from this repository and not started by Dependabot, exists for:
+
+- the **same commit**, from a `push` run — a fast-forward promotion; or
+- the head of a pull request **merged into the pushed branch**, from a `pull_request` run, when that
+  head has the **same tree** (the same files) as the pushed commit **and contains the branch as it
+  was before this push** (`github.event.before`). A `pull_request` run tests the head merged with the
+  base of that moment; every such base is an ancestor of the branch before the push, so of the head
+  — the files it tested were the head's. A PR that was behind its base runs the tests. Squash, merge
+  commit and rebase merges all qualify. **Default branch only**: for a commit on another branch
+  GitHub lists only its open pull requests, so a merge into `staging` runs its tests (a later
+  fast-forward to `main` then matches the staging push run by commit).
+
+Dispatch, schedule, fork and Dependabot runs never count (other inputs, no secrets). It is a match
+only when the earlier run did the same checks, so use it only where:
+
+- the test job does the same on a pull request as on a push, and on every branch — no test step
+  behind `github.event_name` or `github.ref` (a staging push run of a commit counts for `main`), none
+  that needs a secret a pull request does not get;
+- a successful run means the tests ran — no `pull_request` types (`closed`, `labeled`) whose run
+  skips the test job with a job-level `if:` and still ends green;
+- what it uses is pinned (a reusable workflow at `@main` is the same file, not the same code).
+
+Known gaps — GitHub does not keep a merged pull request's runs linked to it, so a run is found by its
+head commit only:
+
+- one head opened as pull requests to two bases, or a PR retargeted after its last run: the green run
+  may have tested the other base. Push a commit (or re-run) after retargeting;
+- a force-pushed (rewound) target branch: a run before the rewind may have tested commits the branch
+  no longer has.
+
+Runs on Linux runners (GNU `timeout`; on macOS install coreutils for `gtimeout`).
+
+It **never skips on doubt**: a GitHub error, a missing permission or an unexpected answer is a
+warning and `skip=false`, and the action never fails the job. No checkout, no third-party action.
+
+Guard the **steps**, not the job: a test job skipped with a job-level `if:` also skips a deploy job
+that `needs:` it. The job then still costs about a minute (and starts its `services:`, ~20 s), not
+the whole test run. **Every** step after it needs the guard — a step added later without it runs on
+a job with no checkout and fails only on the merges that skip. And anything the deploy takes from the
+test job (an uploaded artifact, a job output) is not there on a skip: build what the deploy needs in
+the deploy job, or leave that step unguarded and give it what it needs.
+
+```yaml
+permissions:            # without them the action finds nothing and the tests run
+  actions: read         # runs of this workflow
+  contents: read        # commit trees
+  pull-requests: read   # the merged PR of a commit
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Already tested?
+        id: tested
+        uses: givanov95/ci-workflows/.github/actions/skip-if-tested@<full commit SHA> # vX.Y.Z
+      - uses: actions/checkout@...
+        if: steps.tested.outputs.skip != 'true'
+      # ...every setup and test step gets the same if: (combine with your own, e.g. !cancelled() && ...)
+      - name: Run tests
+        if: steps.tested.outputs.skip != 'true'
+        run: php artisan test
+  deploy:
+    needs: tests        # a green tests job, skipped steps or not
+```
+
+Only useful where the same workflow runs on `pull_request` **and** on `push`, or on pushes to two
+branches of one chain. A repo that tests only on `push` to `main` has nothing to skip.
+`tests/skip-if-tested/skip.test.sh` covers the script; `actions-self-test.yml` runs it live.
+
+## Fast test jobs
+
+GitHub bills every job rounded **up** to a whole minute: a test job of 4:03 costs 5 minutes, one of
+1:01 costs 2. The organisation's free minutes are shared by all its private repos, so every project
+keeps its test job short — also the ones that are under a boundary today, since tests grow:
+
+- **Parallel tests** — `php artisan test --parallel` (needs `brianium/paratest` in `require-dev`;
+  Pest has it built in: `vendor/bin/pest --parallel`). Each process gets its own database
+  (`<name>_test_1`, …), which the service user must be allowed to create (the `postgres`/`root`
+  user of a CI service is). Only for tests that do not share files, cache keys or ports; check
+  locally first, and leave it out where it is flaky.
+- **Databases in memory** — a throwaway service database needs no durability:
+  `options: --tmpfs /var/lib/postgresql/data` for `postgres:17` and older (the image declares that
+  path a volume, so a tmpfs on its parent would be covered by a disk volume), `--tmpfs
+  /var/lib/postgresql` for `postgres:18` (data in `/var/lib/postgresql/18/docker`); MySQL/MariaDB:
+  `--tmpfs /var/lib/mysql`.
+- **Caches** — `ramsey/composer-install` for Composer, `actions/setup-node` with `cache: npm`.
+- **Only the steps the tests need** — one `npm ci`, a Vite build only when the tests render it
+  (a committed `public/build` needs none), no tools installed that no step uses.
+- **Timeouts** — a `timeout-minutes` on the job and on the slow steps, so a hang is cut in minutes,
+  not after six hours.
+- **One job instead of several** where they share the setup (a matrix of databases as steps of one
+  job): every job is billed at least a minute and pays its setup again.
+- **Nothing twice** — `skip-if-tested` above where a workflow runs on both `pull_request` and
+  `push`; `paths-ignore: ['**.md']` for docs-only changes.
+
+Write the test job's duration before and after into the PR that changes it.
 
 ## Usage
 
