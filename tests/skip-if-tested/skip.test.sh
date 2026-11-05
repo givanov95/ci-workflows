@@ -297,6 +297,12 @@ want 'skip=false' output_is 'skip=false'
 want 'says so' log_has 'no pull request merged into staging'
 done_case
 
+new_case 'a branch name with + and @ works (compared in the shell)'
+pr_setup; pulls "[$(pr 25 "$MERGED" "$H" 'release+1@x')]"; runs "$H" pull_request "[$(run 425 pull_request)]"
+step REF_NAME='release+1@x'
+want 'skip=true' output_is 'skip=true'
+done_case
+
 new_case 'no branch name -> warning, tests run'
 step REF_NAME=
 want 'skip=false' output_is 'skip=false'

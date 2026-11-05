@@ -400,7 +400,9 @@ of the same workflow file**, from this repository and not started by Dependabot,
   was before this push** (`github.event.before`). A `pull_request` run tests the head merged with the
   base of that moment; every such base is an ancestor of the branch before the push, so of the head
   — the files it tested were the head's. A PR that was behind its base runs the tests. Squash, merge
-  commit and rebase merges all qualify.
+  commit and rebase merges all qualify. **Default branch only**: for a commit on another branch
+  GitHub lists only its open pull requests, so a merge into `staging` runs its tests (a later
+  fast-forward to `main` then matches the staging push run by commit).
 
 Dispatch, schedule, fork and Dependabot runs never count (other inputs, no secrets). It is a match
 only when the earlier run did the same checks, so use it only where:
@@ -412,8 +414,15 @@ only when the earlier run did the same checks, so use it only where:
   skips the test job with a job-level `if:` and still ends green;
 - what it uses is pinned (a reusable workflow at `@main` is the same file, not the same code).
 
-Known gap: a pull request whose base branch was changed after its last run (its run tested the old
-base); push a commit or re-run it after retargeting.
+Known gaps — GitHub does not keep a merged pull request's runs linked to it, so a run is found by its
+head commit only:
+
+- one head opened as pull requests to two bases, or a PR retargeted after its last run: the green run
+  may have tested the other base. Push a commit (or re-run) after retargeting;
+- a force-pushed (rewound) target branch: a run before the rewind may have tested commits the branch
+  no longer has.
+
+Runs on Linux runners (GNU `timeout`; on macOS install coreutils for `gtimeout`).
 
 It **never skips on doubt**: a GitHub error, a missing permission or an unexpected answer is a
 warning and `skip=false`, and the action never fails the job. No checkout, no third-party action.

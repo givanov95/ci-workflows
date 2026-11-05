@@ -22,13 +22,17 @@ description: >-
 #
 # Only a push is checked; every other event (pull_request, workflow_dispatch, schedule, merge_group)
 # gives skip=false. The code counts as tested when a SUCCESSFUL run of the same workflow file, from
-# this repository and not started by Dependabot, exists for the same commit (a push run - a
-# fast-forward staging -> main) or for the head of this commit's merged pull request (a pull_request
-# run) when that head has the same tree and contains the commit's first parent - then every base it
-# was tested against is in it. A PR that was behind its base runs the tests. The test job must do the
-# same checks on a pull request as on a push (no step behind github.event_name, no secret a PR lacks).
+# this repository and not started by Dependabot, exists for:
+#   - the same commit, from a push run (a fast-forward staging -> main), or
+#   - the head of a pull request merged into the pushed branch, from a pull_request run, when that
+#     head has the same tree and contains the branch as it was before the push (github.event.before)
+#     - then every base it was tested against is in it. Default branch only (GitHub lists only open
+#     PRs of a commit on other branches). A PR that was behind its base runs the tests.
+# The test job must do the same on a pull request as on a push and on every branch (no step behind
+# github.event_name or github.ref, no secret a PR lacks). Known gaps are in the README.
 # Any GitHub error, timeout or missing permission is a warning and skip=false - this action never
-# skips on doubt and never fails the job. No checkout and no third-party action.
+# skips on doubt and never fails the job. No checkout and no third-party action. Linux runners (GNU
+# timeout; on macOS install coreutils for gtimeout).
 #
 # A job with `services:` still starts them (~20 s) before the first step; the job then costs about a
 # minute instead of the full test run.
