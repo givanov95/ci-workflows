@@ -1,0 +1,169 @@
+name: WireGuard connect
+description: >-
+  Brings up a WireGuard tunnel from the runner to a server, so a deploy step can SSH to the
+  server's tunnel address while its public SSH port stays closed to the world.
+
+# Right BEFORE the deploy step, in the deploy job:
+#
+#   - name: WireGuard
+#     uses: givanov95/ci-workflows/.github/actions/wireguard-connect@<sha> # vX.Y.Z
+#     with:
+#       config: ${{ secrets.DEPLOY_WG_CONFIG }}
+#       ping: 10.66.1.1
+#   - name: Deploy over SSH
+#     run: ssh ... deploy@10.66.1.1 ...
+#
+# `config` is a whole wg-quick client config - one key (one peer on the server) per secret:
+#
+#   [Interface]
+#   PrivateKey = <the runner's private key>
+#   Address = 10.66.1.24/32
+#   [Peer]
+#   PublicKey = <the server's public key>
+#   Endpoint = <server public IP>:51820
+#   AllowedIPs = 10.66.1.1/32
+#   PersistentKeepalive = 25
+#
+# Two runners must never use the same key at the same time: the server follows the peer to whichever
+# runner shook hands last and the other one's tunnel goes silent mid-deploy. So every job that uses a
+# key needs a concurrency group that covers all of them (e.g. `group: wireguard-${{ github.repository }}`
+# for one key per repo) - a group per branch is not enough when two branches deploy - or one key per
+# environment.
+#
+# AllowedIPs must be the server's tunnel address only: a route that takes the runner's internet into
+# the tunnel would break every later step, so the action refuses any /0 prefix up front and, once the
+# interface is up, fails if the internet still routes through it (or the ping address does not). A DNS
+# line is refused too (wg-quick would need resolvconf; the deploy uses the tunnel IP). The config file
+# never outlives the step. On any failure after bring-up the tunnel is taken down (wg-quick down); on
+# success it stays for the rest of the job and goes away with the runner - this is for ephemeral
+# (GitHub-hosted) runners. The keys are checked and never printed: wg-quick's output is shown only on
+# failure, without quoted values; a failed ping shows the peer status (the server's endpoint and
+# public keys, no private key). Output `reason` says why a run failed.
+#
+# The step fails when the server does not answer ping on its tunnel address in time - so check that
+# the server allows ICMP from the tunnel (iptables INPUT) and that its UDP port is open.
+
+inputs:
+  config:
+    description: The whole wg-quick client config (pass a secret, e.g. secrets.DEPLOY_WG_CONFIG).
+    required: true
+  ping:
+    description: The server's address inside the tunnel (e.g. 10.66.1.1, no /prefix); the step waits until it answers ping.
+    required: true
+  attempts:
+    description: How many ping attempts (about 2 s each) before giving up.
+    default: '10'
+  interface:
+    description: Name of the WireGuard interface on the runner; it must not exist yet.
+    default: wg0
+
+outputs:
+  seconds:
+    description: Seconds from the start of the step until the server answered (install included).
+    value: ${{ steps.up.outputs.seconds }}
+  reason:
+    description: "Why the step failed: input, exists, install, up, route or ping (empty on success)."
+    value: ${{ steps.up.outputs.reason }}
+
+runs:
+  using: composite
+  steps:
+    - name: Bring up WireGuard to ${{ inputs.ping }}
+      id: up
+      shell: bash
+      env:
+        WG_CONFIG: ${{ inputs.config }}
+        PING_ADDR: ${{ inputs.ping }}
+        ATTEMPTS: ${{ inputs.attempts }}
+        IFACE: ${{ inputs.interface }}
+      run: |
+        set -euo pipefail
+        start=$SECONDS
+        # reason: input | exists | install | up | route | ping - the self-test checks it per case
+        fail() { echo "reason=$1" >> "$GITHUB_OUTPUT"; echo "::error::$2"; exit 1; }
+
+        [ -n "$WG_CONFIG" ] || fail input "config is empty - is the secret (e.g. DEPLOY_WG_CONFIG) set in this repo?"
+        [[ "$IFACE" =~ ^[A-Za-z0-9_=+.-]{1,15}$ ]] || fail input "invalid interface name: $IFACE"
+        [[ "$ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || fail input "attempts must be a positive number, got: $ATTEMPTS"
+        [[ "$PING_ADDR" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ || ( "$PING_ADDR" == *:* && "$PING_ADDR" =~ ^[0-9A-Fa-f:.]+$ ) ]] ||
+          fail input "ping must be a bare IP address (no /prefix, no name), got: $PING_ADDR"
+
+        # Read the config the way wg does: without comments and without any whitespace in a line
+        # ("Allowed IPs = 0.0.0.0/ 0" is AllowedIPs=0.0.0.0/0 to wg). A key has no '#' or spaces.
+        cfg="$(sed -E 's/#.*$//; s/[[:space:]]+//g' <<<"$WG_CONFIG")"
+        grep -qiE '^\[Interface\]' <<<"$cfg" && grep -qiE '^\[Peer\]' <<<"$cfg" ||
+          fail input "config has no [Interface] or no [Peer] section"
+        # A key with a typo would be echoed by wg ("Key is not the correct length or format: `...'"),
+        # so every key line is checked here, without printing it.
+        while IFS= read -r line; do
+          val="${line#*=}"
+          [[ "$val" =~ ^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$ ]] ||
+            fail input "a PrivateKey/PublicKey/PresharedKey in config is not a WireGuard key (44 base64 characters)"
+        done < <(grep -iE '^(PrivateKey|PublicKey|PresharedKey)=' <<<"$cfg")
+        # any /0 prefix, however it is spelled (0.0.0.0/0, ::/0, 0::0/0, 0:0:0:0:0:0:0:0/0 ...)
+        if grep -iE '^AllowedIPs=' <<<"$cfg" | grep -qE '[=,][0-9A-Fa-f:.]+/0+(,|$)'; then
+          fail input "AllowedIPs contains a default route (a /0 prefix); use the server's tunnel address only (e.g. 10.66.1.1/32)"
+        fi
+        if grep -qiE '^DNS=' <<<"$cfg"; then
+          fail input "config has a DNS line; leave it out (the deploy uses the server's tunnel IP)"
+        fi
+
+        conf="/etc/wireguard/$IFACE.conf"
+        ! ip link show "$IFACE" >/dev/null 2>&1 || fail exists "interface $IFACE already exists - give this step another interface name"
+        ! sudo test -e "$conf" || fail exists "$conf already exists - give this step another interface name"
+
+        if ! command -v wg-quick >/dev/null; then
+          # The runner image ships the kernel module but not the tools. Install without an apt
+          # update first (fast); only if the package lists are stale, update and retry.
+          apt=(sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 -y -qq)
+          "${apt[@]}" install --no-install-recommends wireguard-tools >/dev/null 2>&1 || {
+            "${apt[@]}" update >/dev/null &&
+              "${apt[@]}" install --no-install-recommends wireguard-tools >/dev/null
+          } || fail install "could not install wireguard-tools"
+        fi
+
+        # From here on: the config file never outlives the step, and on a failure after bring-up the
+        # tunnel is taken down (wg-quick down also undoes its routes, rules and firewall marks).
+        wrote=false; is_up=false
+        on_exit() {
+          if [ $? -ne 0 ] && $is_up; then
+            sudo wg-quick down "$IFACE" >/dev/null 2>&1 || sudo ip link del "$IFACE" >/dev/null 2>&1 || true
+          fi
+          if $wrote; then sudo rm -f "$conf"; fi
+        }
+        trap on_exit EXIT
+
+        sudo install -d -m 700 /etc/wireguard
+        wrote=true
+        printf '%s\n' "$WG_CONFIG" | sudo install -m 600 /dev/stdin "$conf"
+        rc=0
+        out="$(sudo wg-quick up "$IFACE" 2>&1)" || rc=$?
+        if [ "$rc" -ne 0 ]; then
+          # without lines that quote a value (wg quotes the bad input) or name a key
+          grep -viE '`|private|preshared' <<<"$out" || true
+          fail up "wg-quick up $IFACE failed (exit $rc)"
+        fi
+        is_up=true
+
+        # The internet must not route through the tunnel (e.g. AllowedIPs = 0.0.0.0/1, 128.0.0.0/1),
+        # and the ping address must (or a failed ping would blame the server).
+        for probe in 1.1.1.1 2606:4700:4700::1111; do
+          if ip route get "$probe" 2>/dev/null | grep -qw "dev $IFACE"; then
+            fail route "the route to $probe goes through $IFACE - AllowedIPs must be the server's tunnel address only"
+          fi
+        done
+        ip route get "$PING_ADDR" 2>/dev/null | grep -qw "dev $IFACE" ||
+          fail route "$PING_ADDR does not route through $IFACE - is it inside AllowedIPs?"
+
+        for i in $(seq 1 "$ATTEMPTS"); do
+          if ping -c 1 -W 1 "$PING_ADDR" >/dev/null 2>&1; then
+            seconds=$((SECONDS - start))
+            echo "seconds=$seconds" >> "$GITHUB_OUTPUT"
+            echo "::notice::WireGuard is up: $PING_ADDR answered after ${seconds}s (attempt $i)."
+            exit 0
+          fi
+          sleep 1
+        done
+
+        sudo wg show "$IFACE" | grep -viE 'private|preshared' || true
+        fail ping "$PING_ADDR did not answer through $IFACE after $ATTEMPTS attempts. Is the server's UDP port open, and is this runner's public key a peer on the server?"
