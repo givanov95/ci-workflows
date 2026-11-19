@@ -140,9 +140,26 @@ jobs:
           version-url: http://127.0.0.1:8765/missing/version.json
           release: 'false'
 
-      # wireguard-connect: the refusals first (they fail before anything is installed), then a peer
-      # that never answers (this installs wireguard-tools on the clean runner), then a real server:
-      # a WireGuard interface in a network namespace on this runner, reached over a veth pair.
+      # wireguard-connect: the refusals first (they fail before anything is installed - wg_after checks
+      # that none of their interfaces exists), then a peer that never answers (this installs
+      # wireguard-tools on the clean runner), a split default route (refused after bring-up), then a
+      # real server: a WireGuard interface in a network namespace on this runner, over a veth pair.
+      - name: wireguard-connect — a malformed key (must fail)
+        id: wg_bad_key
+        continue-on-error: true
+        uses: ./.github/actions/wireguard-connect
+        with:
+          config: |
+            [Interface]
+            PrivateKey = AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAx=
+            Address = 10.66.9.10/32
+            [Peer]
+            PublicKey = ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0A=
+            Endpoint = 192.0.2.2:51820
+            AllowedIPs = 10.66.9.1/32
+          ping: 10.66.9.1
+          interface: wg-badkey
+
       - name: wireguard-connect — default route in AllowedIPs (must fail)
         id: wg_default_route
         continue-on-error: true
@@ -193,6 +210,23 @@ jobs:
           attempts: '3'
           interface: wg-silent
 
+      - name: wireguard-connect — a split default route (must fail, interface removed)
+        id: wg_split
+        continue-on-error: true
+        uses: ./.github/actions/wireguard-connect
+        with:
+          config: |
+            [Interface]
+            PrivateKey = AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=
+            Address = 10.66.7.10/32
+            [Peer]
+            PublicKey = ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0A=
+            Endpoint = 127.0.0.1:51898
+            AllowedIPs = 0.0.0.0/1, 128.0.0.0/1
+          ping: 10.66.7.1
+          attempts: '1'
+          interface: wg-split
+
       - name: wireguard-connect — start a server in a network namespace
         id: wg_server
         run: |
@@ -231,16 +265,30 @@ jobs:
           config: ${{ steps.wg_server.outputs.config }}
           ping: 10.66.9.1
 
-      - name: wireguard-connect — the config file is gone, the tunnel stays
+      - name: wireguard-connect — the same interface again (must fail)
+        id: wg_again
+        continue-on-error: true
+        uses: ./.github/actions/wireguard-connect
+        with:
+          config: ${{ steps.wg_server.outputs.config }}
+          ping: 10.66.9.1
+
+      - name: wireguard-connect — the config file is gone, the tunnel stays, the refusals left nothing
         id: wg_after
         run: |
           set -euo pipefail
           if sudo test -e /etc/wireguard/wg0.conf; then echo "::error::/etc/wireguard/wg0.conf is still there"; exit 1; fi
           ping -c 1 -W 2 10.66.9.1 >/dev/null
           ! ip route get 1.1.1.1 | grep -q 'dev wg' || { echo "::error::the internet goes through the tunnel"; exit 1; }
+          for i in wg-badkey wg-route wg-dns wg-split; do
+            ! ip link show "$i" >/dev/null 2>&1 || { echo "::error::$i exists - the refusal did not happen before bring-up (or the interface was not removed)"; exit 1; }
+          done
 
       - name: Check the outcomes
         env:
+          WG_BAD_KEY_OUTCOME: ${{ steps.wg_bad_key.outcome }}
+          WG_SPLIT_OUTCOME: ${{ steps.wg_split.outcome }}
+          WG_AGAIN_OUTCOME: ${{ steps.wg_again.outcome }}
           WG_ROUTE_OUTCOME: ${{ steps.wg_default_route.outcome }}
           WG_DNS_OUTCOME: ${{ steps.wg_dns.outcome }}
           WG_SILENT_OUTCOME: ${{ steps.wg_silent.outcome }}
@@ -277,6 +325,9 @@ jobs:
           check "release: no tag"         "$VERSION_TAG" ''
           check "release: unknown commit" "$UNKNOWN_OUTCOME" failure
           check "release: no version"     "$MISSING_OUTCOME" failure
+          check "wireguard: malformed key" "$WG_BAD_KEY_OUTCOME" failure
+          check "wireguard: split route"   "$WG_SPLIT_OUTCOME" failure
+          check "wireguard: same iface"    "$WG_AGAIN_OUTCOME" failure
           check "wireguard: default route" "$WG_ROUTE_OUTCOME" failure
           check "wireguard: DNS line"      "$WG_DNS_OUTCOME" failure
           check "wireguard: silent peer"   "$WG_SILENT_OUTCOME" failure
