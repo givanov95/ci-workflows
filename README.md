@@ -264,7 +264,7 @@ of a job that runs anyway (the deploy job), so they cost nothing extra:
 | `.github/actions/health-check` | `post-deploy-check.yml` | `url`, `expected-status`, `attempts`, `interval`, `initial-delay`, `soft`; output `healthy` |
 | `.github/actions/deploy-release` | – (action only) | `version-url`, `expected-sha`, `branch`, `release`, `github-token`; outputs `sha`, `tag`, `release` |
 | `.github/actions/skip-if-tested` | – (action only) | `github-token`; outputs `skip`, `reason` |
-| `.github/actions/wireguard-connect` | – (action only) | `config` (a secret), `ping`, `attempts`, `interface`; output `seconds` |
+| `.github/actions/wireguard-connect` | – (action only) | `config` (a secret), `ping`, `attempts`, `interface`; outputs `seconds`, `reason` |
 
 A deploy job with a baseline, the deploy, the verdict and the cards in one runner:
 
@@ -489,16 +489,20 @@ jobs:
   key a `concurrency` group that covers all of them — `group: wireguard-${{ github.repository }}` for
   one key per repo; the `deploy-${{ github.ref }}` group above is per branch and is not enough when two
   branches deploy — or use one key per environment.
-- `AllowedIPs` must be the server's tunnel address only. The action refuses `0.0.0.0/0` / `::/0` and a
-  `DNS` line up front, and after bring-up fails (and removes the interface) if the internet still
-  routes through it (e.g. `0.0.0.0/1, 128.0.0.0/1`), since later steps need the internet. Keys are
-  checked before use and never printed; wg-quick's output appears only on failure, without quoted
-  values. The config file is deleted once the interface is up. The `interface` (default `wg0`) must
-  not exist yet — a second tunnel in one job needs its own name.
+- `AllowedIPs` must be the server's tunnel address only. The action refuses any `/0` prefix and a
+  `DNS` line up front, and after bring-up fails if the internet still routes through the tunnel (e.g.
+  `0.0.0.0/1, 128.0.0.0/1`) or the `ping` address does not, since later steps need the internet. Keys
+  are checked before use and never printed; wg-quick's output appears only on failure, without quoted
+  values. The config file never outlives the step. The `interface` (default `wg0`) must not exist
+  yet — a second tunnel in one job needs its own name.
+- On any failure after bring-up the tunnel is taken down (`wg-quick down`); on success it stays for the
+  rest of the job and goes away with the runner — the action is meant for ephemeral (GitHub-hosted)
+  runners. Output `reason` says why a run failed: `input`, `exists`, `install`, `up`, `route`, `ping`.
 - The step installs `wireguard-tools` when the runner lacks it (the kernel module is there, ~12 s),
   brings the interface up and waits until `ping` (a bare IP) answers through the tunnel: `attempts`
   tries of about 2 s (default 10). Otherwise it fails and shows the peer status (the server's endpoint
-  and public keys). Output `seconds` is the time the step took.
+  and public keys). Output `seconds` is the time the step took. The install waits up to 2 min for a
+  dpkg lock held by another apt run.
 - `DEPLOY_KNOWN_HOSTS` needs a line for the tunnel address (the same host key as the public one).
 - The server side (wg0, the peer of each repo, the UDP port in the firewall) is described in
   givanov95/gweb-ops-mcp (README, WireGuard).

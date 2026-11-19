@@ -31,12 +31,14 @@ description: >-
 # environment.
 #
 # AllowedIPs must be the server's tunnel address only: a route that takes the runner's internet into
-# the tunnel would break every later step, so the action refuses 0.0.0.0/0 and ::/0 up front and, once
-# the interface is up, fails (and takes it down) if the internet still routes through it. A DNS line
-# is refused too (wg-quick would need resolvconf; the deploy uses the tunnel IP). The config file is
-# deleted as soon as the interface is up; the interface goes away with the ephemeral runner. The keys
-# are never printed: wg-quick's output is shown only on failure and without quoted values; on a
-# failed ping the peer status is shown (the server's endpoint and public keys, no private key).
+# the tunnel would break every later step, so the action refuses any /0 prefix up front and, once the
+# interface is up, fails if the internet still routes through it (or the ping address does not). A DNS
+# line is refused too (wg-quick would need resolvconf; the deploy uses the tunnel IP). The config file
+# never outlives the step. On any failure after bring-up the tunnel is taken down (wg-quick down); on
+# success it stays for the rest of the job and goes away with the runner - this is for ephemeral
+# (GitHub-hosted) runners. The keys are checked and never printed: wg-quick's output is shown only on
+# failure, without quoted values; a failed ping shows the peer status (the server's endpoint and
+# public keys, no private key). Output `reason` says why a run failed.
 #
 # The step fails when the server does not answer ping on its tunnel address in time - so check that
 # the server allows ICMP from the tunnel (iptables INPUT) and that its UDP port is open.
@@ -59,6 +61,9 @@ outputs:
   seconds:
     description: Seconds from the start of the step until the server answered (install included).
     value: ${{ steps.up.outputs.seconds }}
+  reason:
+    description: "Why the step failed: input, exists, install, up, route or ping (empty on success)."
+    value: ${{ steps.up.outputs.reason }}
 
 runs:
   using: composite
@@ -74,57 +79,80 @@ runs:
       run: |
         set -euo pipefail
         start=$SECONDS
-        fail() { echo "::error::$*"; exit 1; }
+        # reason: input | exists | install | up | route | ping - the self-test checks it per case
+        fail() { echo "reason=$1" >> "$GITHUB_OUTPUT"; echo "::error::$2"; exit 1; }
 
-        [ -n "$WG_CONFIG" ] || fail "config is empty - is the secret (e.g. DEPLOY_WG_CONFIG) set in this repo?"
-        [[ "$IFACE" =~ ^[A-Za-z0-9_=+.-]{1,15}$ ]] || fail "invalid interface name: $IFACE"
-        [[ "$ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || fail "attempts must be a positive number, got: $ATTEMPTS"
-        [[ "$PING_ADDR" =~ ^[0-9A-Fa-f:.]+$ ]] || fail "ping must be a bare IP address (no /prefix, no name), got: $PING_ADDR"
-        grep -qiE '^\s*\[Interface\]' <<<"$WG_CONFIG" && grep -qiE '^\s*\[Peer\]' <<<"$WG_CONFIG" ||
-          fail "config has no [Interface] or no [Peer] section"
+        [ -n "$WG_CONFIG" ] || fail input "config is empty - is the secret (e.g. DEPLOY_WG_CONFIG) set in this repo?"
+        [[ "$IFACE" =~ ^[A-Za-z0-9_=+.-]{1,15}$ ]] || fail input "invalid interface name: $IFACE"
+        [[ "$ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || fail input "attempts must be a positive number, got: $ATTEMPTS"
+        [[ "$PING_ADDR" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ || ( "$PING_ADDR" == *:* && "$PING_ADDR" =~ ^[0-9A-Fa-f:.]+$ ) ]] ||
+          fail input "ping must be a bare IP address (no /prefix, no name), got: $PING_ADDR"
+
+        # wg-quick drops comments, so every check reads the config without them (a key has no '#').
+        cfg="$(sed -E 's/#.*$//' <<<"$WG_CONFIG")"
+        grep -qiE '^\s*\[Interface\]' <<<"$cfg" && grep -qiE '^\s*\[Peer\]' <<<"$cfg" ||
+          fail input "config has no [Interface] or no [Peer] section"
         # A key with a typo would be echoed by wg ("Key is not the correct length or format: `...'"),
-        # so check the keys here, without printing them.
-        while IFS= read -r key; do
-          [[ "$key" =~ ^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$ ]] || fail "a PrivateKey/PublicKey/PresharedKey in config is not a WireGuard key (44 base64 characters)"
-        done < <(sed -nE 's/^\s*(PrivateKey|PublicKey|PresharedKey)\s*=\s*(\S*)\s*$/\2/Ip' <<<"$WG_CONFIG")
-        if grep -iE '^\s*AllowedIPs\s*=' <<<"$WG_CONFIG" | grep -qE '(^|[=,[:space:]])(0\.0\.0\.0/0|::/0|::0/0|0::/0)([,[:space:]]|$)'; then
-          fail "AllowedIPs contains a default route (0.0.0.0/0 or ::/0); use the server's tunnel address only (e.g. 10.66.1.1/32)"
+        # so every key line is checked here, without printing it.
+        while IFS= read -r line; do
+          val="${line#*=}"; val="${val#"${val%%[![:space:]]*}"}"; val="${val%"${val##*[![:space:]]}"}"
+          [[ "$val" =~ ^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$ ]] ||
+            fail input "a PrivateKey/PublicKey/PresharedKey in config is not a WireGuard key (44 base64 characters)"
+        done < <(grep -iE '^\s*(PrivateKey|PublicKey|PresharedKey)\s*=' <<<"$cfg")
+        # any /0 prefix, however it is spelled (0.0.0.0/0, ::/0, 0::0/0, 0:0:0:0:0:0:0:0/0 ...)
+        if grep -iE '^\s*AllowedIPs\s*=' <<<"$cfg" | grep -qE '(^|[=,[:space:]])[0-9A-Fa-f:.]+/0+([,[:space:]]|$)'; then
+          fail input "AllowedIPs contains a default route (a /0 prefix); use the server's tunnel address only (e.g. 10.66.1.1/32)"
         fi
-        if grep -qiE '^\s*DNS\s*=' <<<"$WG_CONFIG"; then
-          fail "config has a DNS line; leave it out (the deploy uses the server's tunnel IP)"
+        if grep -qiE '^\s*DNS\s*=' <<<"$cfg"; then
+          fail input "config has a DNS line; leave it out (the deploy uses the server's tunnel IP)"
         fi
 
         conf="/etc/wireguard/$IFACE.conf"
-        ! ip link show "$IFACE" >/dev/null 2>&1 || fail "interface $IFACE already exists - give this step another interface name"
-        ! sudo test -e "$conf" || fail "$conf already exists - give this step another interface name"
+        ! ip link show "$IFACE" >/dev/null 2>&1 || fail exists "interface $IFACE already exists - give this step another interface name"
+        ! sudo test -e "$conf" || fail exists "$conf already exists - give this step another interface name"
 
         if ! command -v wg-quick >/dev/null; then
           # The runner image ships the kernel module but not the tools. Install without an apt
           # update first (fast); only if the package lists are stale, update and retry.
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends wireguard-tools >/dev/null 2>&1 || {
-            sudo apt-get update -qq >/dev/null
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends wireguard-tools >/dev/null
-          }
+          apt=(sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 -y -qq)
+          "${apt[@]}" install --no-install-recommends wireguard-tools >/dev/null 2>&1 || {
+            "${apt[@]}" update >/dev/null &&
+              "${apt[@]}" install --no-install-recommends wireguard-tools >/dev/null
+          } || fail install "could not install wireguard-tools"
         fi
 
+        # From here on: the config file never outlives the step, and on a failure after bring-up the
+        # tunnel is taken down (wg-quick down also undoes its routes, rules and firewall marks).
+        wrote=false; is_up=false
+        on_exit() {
+          if [ $? -ne 0 ] && $is_up; then
+            sudo wg-quick down "$IFACE" >/dev/null 2>&1 || sudo ip link del "$IFACE" >/dev/null 2>&1 || true
+          fi
+          if $wrote; then sudo rm -f "$conf"; fi
+        }
+        trap on_exit EXIT
+
         sudo install -d -m 700 /etc/wireguard
+        wrote=true
         printf '%s\n' "$WG_CONFIG" | sudo install -m 600 /dev/stdin "$conf"
         rc=0
         out="$(sudo wg-quick up "$IFACE" 2>&1)" || rc=$?
-        sudo rm -f "$conf"
         if [ "$rc" -ne 0 ]; then
-          # without lines that quote a value (wg quotes the bad input, which may be a key)
-          grep -vE '`|private' <<<"$out" || true
-          fail "wg-quick up $IFACE failed (exit $rc)"
+          # without lines that quote a value (wg quotes the bad input) or name a key
+          grep -viE '`|private|preshared' <<<"$out" || true
+          fail up "wg-quick up $IFACE failed (exit $rc)"
         fi
+        is_up=true
 
-        # The internet must not route through the tunnel (e.g. AllowedIPs = 0.0.0.0/1, 128.0.0.0/1).
+        # The internet must not route through the tunnel (e.g. AllowedIPs = 0.0.0.0/1, 128.0.0.0/1),
+        # and the ping address must (or a failed ping would blame the server).
         for probe in 1.1.1.1 2606:4700:4700::1111; do
           if ip route get "$probe" 2>/dev/null | grep -qw "dev $IFACE"; then
-            sudo ip link del "$IFACE" || true
-            fail "the route to $probe goes through $IFACE - AllowedIPs must be the server's tunnel address only"
+            fail route "the route to $probe goes through $IFACE - AllowedIPs must be the server's tunnel address only"
           fi
         done
+        ip route get "$PING_ADDR" 2>/dev/null | grep -qw "dev $IFACE" ||
+          fail route "$PING_ADDR does not route through $IFACE - is it inside AllowedIPs?"
 
         for i in $(seq 1 "$ATTEMPTS"); do
           if ping -c 1 -W 1 "$PING_ADDR" >/dev/null 2>&1; then
@@ -136,5 +164,5 @@ runs:
           sleep 1
         done
 
-        sudo wg show "$IFACE" | grep -viE 'private' || true
-        fail "$PING_ADDR did not answer through $IFACE after $ATTEMPTS attempts. Is the server's UDP port open, and is this runner's public key a peer on the server?"
+        sudo wg show "$IFACE" | grep -viE 'private|preshared' || true
+        fail ping "$PING_ADDR did not answer through $IFACE after $ATTEMPTS attempts. Is the server's UDP port open, and is this runner's public key a peer on the server?"

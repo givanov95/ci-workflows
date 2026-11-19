@@ -140,8 +140,8 @@ jobs:
           version-url: http://127.0.0.1:8765/missing/version.json
           release: 'false'
 
-      # wireguard-connect: the refusals first (they fail before anything is installed - wg_after checks
-      # that none of their interfaces exists), then a peer that never answers (this installs
+      # wireguard-connect: the refusals first (they fail before anything is installed; each case's
+      # `reason` is checked, and wg_after checks that no failed run left an interface), then a peer that never answers (this installs
       # wireguard-tools on the clean runner), a split default route (refused after bring-up), then a
       # real server: a WireGuard interface in a network namespace on this runner, over a veth pair.
       - name: wireguard-connect — a malformed key (must fail)
@@ -151,7 +151,7 @@ jobs:
         with:
           config: |
             [Interface]
-            PrivateKey = AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAx=
+            PrivateKey = AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAx=  # runner key
             Address = 10.66.9.10/32
             [Peer]
             PublicKey = ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0A=
@@ -172,7 +172,7 @@ jobs:
             [Peer]
             PublicKey = ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0A=
             Endpoint = 192.0.2.2:51820
-            AllowedIPs = 10.66.9.1/32, 0.0.0.0/0
+            AllowedIPs = 10.66.9.1/32, 0::0/0  # all
           ping: 10.66.9.1
           interface: wg-route
 
@@ -280,13 +280,18 @@ jobs:
           if sudo test -e /etc/wireguard/wg0.conf; then echo "::error::/etc/wireguard/wg0.conf is still there"; exit 1; fi
           ping -c 1 -W 2 10.66.9.1 >/dev/null
           ! ip route get 1.1.1.1 | grep -q 'dev wg' || { echo "::error::the internet goes through the tunnel"; exit 1; }
-          for i in wg-badkey wg-route wg-dns wg-split; do
-            ! ip link show "$i" >/dev/null 2>&1 || { echo "::error::$i exists - the refusal did not happen before bring-up (or the interface was not removed)"; exit 1; }
+          for i in wg-badkey wg-route wg-dns wg-silent wg-split; do
+            ! ip link show "$i" >/dev/null 2>&1 || { echo "::error::$i exists - a failed run must leave no interface"; exit 1; }
           done
 
       - name: Check the outcomes
         env:
           WG_BAD_KEY_OUTCOME: ${{ steps.wg_bad_key.outcome }}
+          WG_REASONS: >-
+            ${{ steps.wg_bad_key.outputs.reason }} ${{ steps.wg_default_route.outputs.reason }}
+            ${{ steps.wg_dns.outputs.reason }} ${{ steps.wg_silent.outputs.reason }}
+            ${{ steps.wg_split.outputs.reason }} ${{ steps.wg_again.outputs.reason }}
+            [${{ steps.wg_ok.outputs.reason }}]
           WG_SPLIT_OUTCOME: ${{ steps.wg_split.outcome }}
           WG_AGAIN_OUTCOME: ${{ steps.wg_again.outcome }}
           WG_ROUTE_OUTCOME: ${{ steps.wg_default_route.outcome }}
@@ -333,6 +338,8 @@ jobs:
           check "wireguard: silent peer"   "$WG_SILENT_OUTCOME" failure
           check "wireguard: server"        "$WG_OK_OUTCOME" success
           [[ "$WG_SECONDS" =~ ^[0-9]+$ ]] || { echo "FAIL wireguard: seconds = '$WG_SECONDS'"; fail=1; }
+          # each must-fail case failed for its own reason (not, say, a failed install)
+          check "wireguard: reasons" "$WG_REASONS" "input input input ping route exists []"
           echo "wireguard-connect: up in ${WG_SECONDS}s (this runner had wireguard-tools from the silent-peer case)"
           echo "skip-if-tested: skip=$TESTED_SKIP ($TESTED_REASON)"
           case "$TESTED_WANT" in
