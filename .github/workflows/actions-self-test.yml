@@ -208,8 +208,9 @@ jobs:
           sudo ip -n wgsrv addr add 192.0.2.2/24 dev veth-wgsrv
           sudo ip -n wgsrv link set veth-wgsrv up && sudo ip -n wgsrv link set lo up
           sudo ip -n wgsrv link add wg0 type wireguard
-          sudo ip netns exec wgsrv wg set wg0 listen-port 51820 private-key "$d/server.key" \
-            peer "$(wg pubkey < "$d/client.key")" allowed-ips 10.66.9.10/32
+          # the key goes in on stdin: under `ip netns exec`, wg cannot open a file in RUNNER_TEMP
+          sudo ip netns exec wgsrv wg set wg0 listen-port 51820 private-key /dev/stdin < "$d/server.key"
+          sudo ip netns exec wgsrv wg set wg0 peer "$(wg pubkey < "$d/client.key")" allowed-ips 10.66.9.10/32
           sudo ip -n wgsrv addr add 10.66.9.1/24 dev wg0 && sudo ip -n wgsrv link set wg0 up
           {
             echo 'config<<WG_EOF'
