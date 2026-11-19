@@ -88,22 +88,23 @@ runs:
         [[ "$PING_ADDR" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ || ( "$PING_ADDR" == *:* && "$PING_ADDR" =~ ^[0-9A-Fa-f:.]+$ ) ]] ||
           fail input "ping must be a bare IP address (no /prefix, no name), got: $PING_ADDR"
 
-        # wg-quick drops comments, so every check reads the config without them (a key has no '#').
-        cfg="$(sed -E 's/#.*$//' <<<"$WG_CONFIG")"
-        grep -qiE '^\s*\[Interface\]' <<<"$cfg" && grep -qiE '^\s*\[Peer\]' <<<"$cfg" ||
+        # Read the config the way wg does: without comments and without any whitespace in a line
+        # ("Allowed IPs = 0.0.0.0/ 0" is AllowedIPs=0.0.0.0/0 to wg). A key has no '#' or spaces.
+        cfg="$(sed -E 's/#.*$//; s/[[:space:]]+//g' <<<"$WG_CONFIG")"
+        grep -qiE '^\[Interface\]' <<<"$cfg" && grep -qiE '^\[Peer\]' <<<"$cfg" ||
           fail input "config has no [Interface] or no [Peer] section"
         # A key with a typo would be echoed by wg ("Key is not the correct length or format: `...'"),
         # so every key line is checked here, without printing it.
         while IFS= read -r line; do
-          val="${line#*=}"; val="${val#"${val%%[![:space:]]*}"}"; val="${val%"${val##*[![:space:]]}"}"
+          val="${line#*=}"
           [[ "$val" =~ ^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$ ]] ||
             fail input "a PrivateKey/PublicKey/PresharedKey in config is not a WireGuard key (44 base64 characters)"
-        done < <(grep -iE '^\s*(PrivateKey|PublicKey|PresharedKey)\s*=' <<<"$cfg")
+        done < <(grep -iE '^(PrivateKey|PublicKey|PresharedKey)=' <<<"$cfg")
         # any /0 prefix, however it is spelled (0.0.0.0/0, ::/0, 0::0/0, 0:0:0:0:0:0:0:0/0 ...)
-        if grep -iE '^\s*AllowedIPs\s*=' <<<"$cfg" | grep -qE '(^|[=,[:space:]])[0-9A-Fa-f:.]+/0+([,[:space:]]|$)'; then
+        if grep -iE '^AllowedIPs=' <<<"$cfg" | grep -qE '[=,][0-9A-Fa-f:.]+/0+(,|$)'; then
           fail input "AllowedIPs contains a default route (a /0 prefix); use the server's tunnel address only (e.g. 10.66.1.1/32)"
         fi
-        if grep -qiE '^\s*DNS\s*=' <<<"$cfg"; then
+        if grep -qiE '^DNS=' <<<"$cfg"; then
           fail input "config has a DNS line; leave it out (the deploy uses the server's tunnel IP)"
         fi
 
