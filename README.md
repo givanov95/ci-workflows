@@ -264,6 +264,7 @@ of a job that runs anyway (the deploy job), so they cost nothing extra:
 | `.github/actions/health-check` | `post-deploy-check.yml` | `url`, `expected-status`, `attempts`, `interval`, `initial-delay`, `soft`; output `healthy` |
 | `.github/actions/deploy-release` | – (action only) | `version-url`, `expected-sha`, `branch`, `release`, `github-token`; outputs `sha`, `tag`, `release` |
 | `.github/actions/skip-if-tested` | – (action only) | `github-token`; outputs `skip`, `reason` |
+| `.github/actions/wireguard-connect` | – (action only) | `config` (a secret), `ping`, `attempts`, `interface`; output `seconds` |
 
 A deploy job with a baseline, the deploy, the verdict and the cards in one runner:
 
@@ -460,6 +461,42 @@ jobs:
 Only useful where the same workflow runs on `pull_request` **and** on `push`, or on pushes to two
 branches of one chain. A repo that tests only on `push` to `main` has nothing to skip.
 `tests/skip-if-tested/skip.test.sh` covers the script; `actions-self-test.yml` runs it live.
+
+### `wireguard-connect` — deploy over SSH with port 22 closed to the world
+
+GitHub-hosted runners come from thousands of shared cloud ranges, so a server cannot allow-list them
+for SSH. This action brings up a WireGuard tunnel from the runner to the server instead: the server
+keeps one UDP port open (WireGuard answers nothing without a valid key) and SSH is reached on the
+server's tunnel address. The SSH key, its forced command and the deploy itself stay as they are; only
+the host changes.
+
+```yaml
+jobs:
+  deploy:
+    steps:
+      - name: WireGuard
+        uses: givanov95/ci-workflows/.github/actions/wireguard-connect@<full commit SHA> # vX.Y.Z
+        with:
+          config: ${{ secrets.DEPLOY_WG_CONFIG }}
+          ping: 10.66.1.1
+      - name: Deploy over SSH
+        run: ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes deploy@10.66.1.1 "$GITHUB_SHA"
+```
+
+- `config` is the whole wg-quick client config of **this repo's own peer** (one key per repo: runs of
+  one repo are serialized by the deploy job's `concurrency`, runs of two repos would fight over a
+  shared key). `AllowedIPs` must be the server's tunnel address only: the action refuses a default
+  route (`0.0.0.0/0`, `::/0`), which would cut the runner off the internet for the later steps, and a
+  `DNS` line. Nothing of the config is printed; the file is deleted once the interface is up.
+- The step installs `wireguard-tools` when the runner lacks it (the kernel module is there), brings the
+  interface up and waits until `ping` answers through the tunnel, `attempts` one-second tries
+  (default 20). It fails with the peer status otherwise. Output `seconds` is the time the step took.
+- `DEPLOY_KNOWN_HOSTS` needs a line for the tunnel address (the same host key as the public one).
+- The server side (wg0, the peer of each repo, the UDP port in the firewall) is described in
+  givanov95/gweb-ops-mcp (README, WireGuard).
+
+`actions-self-test.yml` runs it against a WireGuard server in a network namespace on the runner, plus
+the cases it must refuse.
 
 ## Fast test jobs
 

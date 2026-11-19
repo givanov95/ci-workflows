@@ -140,8 +140,107 @@ jobs:
           version-url: http://127.0.0.1:8765/missing/version.json
           release: 'false'
 
+      # wireguard-connect: the refusals first (they fail before anything is installed), then a peer
+      # that never answers (this installs wireguard-tools on the clean runner), then a real server:
+      # a WireGuard interface in a network namespace on this runner, reached over a veth pair.
+      - name: wireguard-connect — default route in AllowedIPs (must fail)
+        id: wg_default_route
+        continue-on-error: true
+        uses: ./.github/actions/wireguard-connect
+        with:
+          config: |
+            [Interface]
+            PrivateKey = AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=
+            Address = 10.66.9.10/32
+            [Peer]
+            PublicKey = ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0A=
+            Endpoint = 192.0.2.2:51820
+            AllowedIPs = 10.66.9.1/32, 0.0.0.0/0
+          ping: 10.66.9.1
+          interface: wg-route
+
+      - name: wireguard-connect — DNS line (must fail)
+        id: wg_dns
+        continue-on-error: true
+        uses: ./.github/actions/wireguard-connect
+        with:
+          config: |
+            [Interface]
+            PrivateKey = AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=
+            Address = 10.66.9.10/32
+            DNS = 1.1.1.1
+            [Peer]
+            PublicKey = ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0A=
+            Endpoint = 192.0.2.2:51820
+            AllowedIPs = 10.66.9.1/32
+          ping: 10.66.9.1
+          interface: wg-dns
+
+      - name: wireguard-connect — a peer that never answers (must fail)
+        id: wg_silent
+        continue-on-error: true
+        uses: ./.github/actions/wireguard-connect
+        with:
+          config: |
+            [Interface]
+            PrivateKey = AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=
+            Address = 10.66.8.10/32
+            [Peer]
+            PublicKey = ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0A=
+            Endpoint = 127.0.0.1:51899
+            AllowedIPs = 10.66.8.1/32
+          ping: 10.66.8.1
+          attempts: '3'
+          interface: wg-silent
+
+      - name: wireguard-connect — start a server in a network namespace
+        id: wg_server
+        run: |
+          set -euo pipefail
+          umask 077
+          d="$RUNNER_TEMP/wg"; mkdir -p "$d"
+          wg genkey > "$d/server.key"; wg genkey > "$d/client.key"
+          echo "::add-mask::$(cat "$d/client.key")"   # a throwaway key, but keep the habit
+          sudo ip netns add wgsrv
+          sudo ip link add veth-wg type veth peer name veth-wgsrv
+          sudo ip link set veth-wgsrv netns wgsrv
+          sudo ip addr add 192.0.2.1/24 dev veth-wg && sudo ip link set veth-wg up
+          sudo ip -n wgsrv addr add 192.0.2.2/24 dev veth-wgsrv
+          sudo ip -n wgsrv link set veth-wgsrv up && sudo ip -n wgsrv link set lo up
+          sudo ip -n wgsrv link add wg0 type wireguard
+          sudo ip netns exec wgsrv wg set wg0 listen-port 51820 private-key "$d/server.key" \
+            peer "$(wg pubkey < "$d/client.key")" allowed-ips 10.66.9.10/32
+          sudo ip -n wgsrv addr add 10.66.9.1/24 dev wg0 && sudo ip -n wgsrv link set wg0 up
+          {
+            echo 'config<<WG_EOF'
+            printf '[Interface]\nPrivateKey = %s\nAddress = 10.66.9.10/32\n\n' "$(cat "$d/client.key")"
+            printf '[Peer]\nPublicKey = %s\nEndpoint = 192.0.2.2:51820\nAllowedIPs = 10.66.9.1/32\nPersistentKeepalive = 25\n' "$(wg pubkey < "$d/server.key")"
+            echo 'WG_EOF'
+          } >> "$GITHUB_OUTPUT"
+          rm -f "$d/server.key" "$d/client.key"
+
+      - name: wireguard-connect — the server answers through the tunnel
+        id: wg_ok
+        uses: ./.github/actions/wireguard-connect
+        with:
+          config: ${{ steps.wg_server.outputs.config }}
+          ping: 10.66.9.1
+
+      - name: wireguard-connect — the config file is gone, the tunnel stays
+        id: wg_after
+        run: |
+          set -euo pipefail
+          if sudo test -e /etc/wireguard/wg0.conf; then echo "::error::/etc/wireguard/wg0.conf is still there"; exit 1; fi
+          ping -c 1 -W 2 10.66.9.1 >/dev/null
+          ! ip route get 1.1.1.1 | grep -q 'dev wg' || { echo "::error::the internet goes through the tunnel"; exit 1; }
+
       - name: Check the outcomes
         env:
+          WG_ROUTE_OUTCOME: ${{ steps.wg_default_route.outcome }}
+          WG_DNS_OUTCOME: ${{ steps.wg_dns.outcome }}
+          WG_SILENT_OUTCOME: ${{ steps.wg_silent.outcome }}
+          WG_OK_OUTCOME: ${{ steps.wg_ok.outcome }}
+          WG_SECONDS: ${{ steps.wg_ok.outputs.seconds }}
           OK: ${{ steps.ok.outputs.healthy }}
           EXPECTED: ${{ steps.expected.outputs.healthy }}
           SOFT: ${{ steps.soft.outputs.healthy }}
@@ -173,6 +272,12 @@ jobs:
           check "release: no tag"         "$VERSION_TAG" ''
           check "release: unknown commit" "$UNKNOWN_OUTCOME" failure
           check "release: no version"     "$MISSING_OUTCOME" failure
+          check "wireguard: default route" "$WG_ROUTE_OUTCOME" failure
+          check "wireguard: DNS line"      "$WG_DNS_OUTCOME" failure
+          check "wireguard: silent peer"   "$WG_SILENT_OUTCOME" failure
+          check "wireguard: server"        "$WG_OK_OUTCOME" success
+          [[ "$WG_SECONDS" =~ ^[0-9]+$ ]] || { echo "FAIL wireguard: seconds = '$WG_SECONDS'"; fail=1; }
+          echo "wireguard-connect: up in ${WG_SECONDS}s (this runner had wireguard-tools from the silent-peer case)"
           echo "skip-if-tested: skip=$TESTED_SKIP ($TESTED_REASON)"
           case "$TESTED_WANT" in
             false) check "skip-if-tested: not a push" "$TESTED_SKIP" false ;;
